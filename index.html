@@ -15,11 +15,6 @@
     </div>
 
     <div class="wrap">
-        <button class="collapse-btn" id="collapseBtn" aria-label="Minimize uploader">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                <line x1="2" y1="7" x2="12" y2="7"/>
-            </svg>
-        </button>
         <div id="initialView">
             <h1>Your Comic Library</h1>
             <p>Choose how you want to read your comics</p>
@@ -46,7 +41,7 @@
                 </svg>
                 <div>
                     <div class="btn-title">Quick Read</div>
-                    <div class="btn-subtitle">Upload individual files (no progress saving)</div>
+                    <div class="btn-subtitle">Upload individual files, progress saved in this browser</div>
                 </div>
             </button>
         </div>
@@ -65,7 +60,10 @@
             </div>
 
             <div id="recentComics" style="display:none;">
-                <h3>Recently Read</h3>
+                <div class="section-header">
+                    <h3>Recently Read</h3>
+                    <button id="clearRecentBtn" class="link-btn link-btn-small" title="Remove all comics from this list. Reading progress is kept.">Clear</button>
+                </div>
                 <div id="recentComicsList"></div>
             </div>
 
@@ -83,22 +81,49 @@
             <form id="dropzone" class="dropzone">
                 <div class="dz-message">
                     Click to select, or drop files here
-                    <div class="hint">(cbr, cbz, cbt only) • Progress won't be saved</div>
+                    <div class="hint">(cbr, cbz, cbt only) • Progress is saved in this browser</div>
                 </div>
             </form>
         </div>
         <footer class="footer-default">
-            Afif Zafri 2017 &ndash; <span id="currYear"></span>
+            mersahin <span id="currYear"></span>
+            <span class="footer-credit">&middot; based on <a href="https://github.com/afzafri/Web-Comic-Reader" target="_blank" rel="noopener">Web Comic Reader</a> by Afif Zafri</span>
             <a href="https://github.com/mersahin/Web-Comic-Reader" target="_blank" rel="noopener" aria-label="View source on GitHub">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="vertical-align: middle; margin-left: 6px;">
                     <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
                 </svg>
             </a>
         </footer>
-        <div class="footer-collapsed" id="footerCollapsedText">Show library</div>
     </div>
 
+    <div id="readerProgress" class="reader-progress" hidden><div class="reader-progress-fill"></div></div>
+
+    <header id="readerBar" class="reader-bar" hidden>
+        <button id="readerCloseBtn" class="rb-btn" aria-label="Close comic" title="Close (Esc)">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"/></svg>
+        </button>
+        <div id="readerTitle" class="rb-title"></div>
+        <div id="readerPage" class="rb-page" aria-live="polite">0 / 0</div>
+        <div class="rb-group" role="group" aria-label="View mode">
+            <button id="modeStripBtn" class="rb-btn" data-mode="strip" title="Continuous scroll (M)" aria-label="Continuous scroll view">
+                <svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="1" width="8" height="6.5" rx="1"/><rect x="4" y="8.5" width="8" height="6.5" rx="1"/></svg>
+            </button>
+            <button id="modeGridBtn" class="rb-btn" data-mode="grid" title="Grid + gallery (M)" aria-label="Grid view">
+                <svg viewBox="0 0 16 16" fill="currentColor"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1"/><rect x="9" y="9" width="5.5" height="5.5" rx="1"/></svg>
+            </button>
+        </div>
+        <button id="readerWidthBtn" class="rb-btn rb-width" title="Page width (W)" aria-label="Change page width">M</button>
+        <button id="readerFullscreenBtn" class="rb-btn" title="Fullscreen (F)" aria-label="Toggle fullscreen">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 5.5v-4h4M10.5 1.5h4v4M14.5 10.5v4h-4M5.5 14.5h-4v-4"/></svg>
+        </button>
+    </header>
+
     <div id="output"></div>
+
+    <div id="resumeToast" class="reader-toast" role="status" hidden>
+        <span id="resumeToastText"></span>
+        <button id="resumeStartOverBtn" class="link-btn">Start over</button>
+    </div>
 
     <script src="./assets/js/uncompress/uncompress.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/lightgallery.js@1.4.0/dist/js/lightgallery.min.js"></script>

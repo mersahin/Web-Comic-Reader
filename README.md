@@ -9,10 +9,15 @@ Modern web-based comic book reader for CBR, CBZ, and CBT files with library mana
 ## Features
 
 - **Modern UI** 
+- **Continuous Scroll Mode** - Pages stacked top to bottom with no gaps, like a webtoon/long-strip reader (default)
+- **Grid + Gallery Mode** - Thumbnail grid with lightGallery zoom, rotate and fullscreen; switch any time without losing your page
+- **Adjustable Page Width** - Narrow, medium, wide or full width in scroll mode
+- **Auto-hiding Toolbar** - Page counter, progress bar, view switch and fullscreen; hides while you read down
+- **Resume Reading** - Jumps back to the exact page you left, with a one-click "Start over"
 - **Library Mode** - Select your comics folder once, access anytime with persistent folder access
 - **Reading Progress** - Automatically saves your last read page and scrolls to it when you reopen
 - **Thumbnail Previews** - Auto-generated cover thumbnails for quick comic recognition
-- **Recently Read** - Quick access to your last 5 comics with progress indicators
+- **Recently Read** - Quick access to your last 5 comics with progress indicators; remove single entries or clear the list (progress is kept)
 - **Quick Read Mode** - Upload and read individual files without library setup
 - **Client-Side Only** - All processing happens in your browser, no server uploads required
 - **Offline Support** - Works completely offline after initial load
@@ -29,7 +34,18 @@ Modern web-based comic book reader for CBR, CBZ, and CBT files with library mana
 ### Quick Read Mode
 1. Click "Quick Read"
 2. Upload a single CBR/CBZ/CBT file
-3. Read immediately (progress won't be saved)
+3. Read immediately (progress is remembered per file name in this browser)
+
+### Keyboard Shortcuts (while reading)
+| Key | Action |
+|-----|--------|
+| `→` / `D` / `N` | Next page (scroll mode) |
+| `←` / `A` / `P` | Previous page (scroll mode) |
+| `Space`, `PageDown`, `↓` | Scroll down |
+| `M` | Switch between scroll and grid view |
+| `W` / `Shift+W` | Cycle page width (scroll mode) |
+| `F` | Toggle fullscreen |
+| `Esc` | Close the comic |
 
 ## Getting Started (Development)
 
@@ -107,6 +123,8 @@ GitHub Pages serves over HTTPS, so Library Mode works on the live site.
 
 ### Development Notes
 - Reading progress is stored in `localStorage` (key: `comic_reader_userpref`)
+- Reader settings (view mode, page width) are stored in `localStorage` (key: `comic_reader_settings`)
+- Archive pages are filtered to images (`__MACOSX`, dotfiles and metadata such as `ComicInfo.xml` are skipped) and sorted naturally (`page2` before `page10`)
 - Folder handles are stored in `IndexedDB` (database: `ComicReaderDB`)
 - Thumbnails are base64-encoded JPEG stored in localStorage
 - Uses vanilla JavaScript (no jQuery required)

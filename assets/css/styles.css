@@ -21,6 +21,10 @@
     box-sizing: border-box;
 }
 
+[hidden] {
+    display: none !important;
+}
+
 body {
     margin: 0;
     font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
@@ -33,11 +37,7 @@ body {
     padding: 40px 0;
 }
 
-body:has(#output[style*="display: block"]) {
-    justify-content: flex-start;
-}
-
-body:not(:has(#output[style*="display: block"])) {
+body:not(.reader-open) {
     justify-content: center;
 }
 
@@ -50,38 +50,6 @@ body:not(:has(#output[style*="display: block"])) {
     padding: 30px 26px;
     text-align: center;
     position: relative;
-}
-
-.collapse-btn {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    background: var(--bg);
-    color: var(--text);
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    transition: all .2s;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    opacity: 0.6;
-}
-
-.collapse-btn:hover {
-    opacity: 1;
-    background: var(--border);
-}
-
-.collapse-btn.show {
-    display: flex;
-}
-
-.wrap.collapsed .collapse-btn {
-    display: none;
 }
 
 h1 {
@@ -233,8 +201,29 @@ p {
     right: 0;
 }
 
+#recentComics,
+#allComics {
+    text-align: left;
+}
+
 #recentComics {
     margin: 20px 0;
+}
+
+.section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 0 0 12px;
+}
+
+.section-header h3 {
+    margin: 0 !important;
+}
+
+.link-btn-small {
+    font-size: 13px;
+    padding: 4px 8px;
 }
 
 #recentComics h3,
@@ -292,6 +281,13 @@ p {
     flex-shrink: 0;
 }
 
+.recent-comic-icon img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 6px;
+}
+
 .recent-comic-icon svg {
     width: 20px;
     height: 20px;
@@ -316,6 +312,42 @@ p {
 .recent-comic-meta {
     font-size: 12px;
     color: var(--muted);
+}
+
+.recent-remove-btn {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    padding: 6px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity .15s, background .15s, color .15s;
+}
+
+.recent-remove-btn svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+.recent-comic-item:hover .recent-remove-btn,
+.recent-remove-btn:focus-visible {
+    opacity: 1;
+}
+
+.recent-remove-btn:hover {
+    background: var(--card);
+    color: #ef4444;
+}
+
+@media (hover: none) {
+    .recent-remove-btn {
+        opacity: 1;
+    }
 }
 
 #dropzone {
@@ -367,47 +399,8 @@ footer a:hover {
     color: var(--text);
 }
 
-.footer-collapsed {
-    display: none;
-    text-align: center;
-    color: var(--muted);
-    font-size: 14px;
-    cursor: pointer;
-    padding: 8px;
-    border-radius: 8px;
-    transition: all .2s;
-}
-
-.footer-collapsed:hover {
-    color: var(--text);
-    background: rgba(0,0,0,.03);
-}
-
-@media (prefers-color-scheme: dark) {
-    .footer-collapsed:hover {
-        background: rgba(255,255,255,.05);
-    }
-}
-
-.footer-collapsed::before {
-    content: '▼ ';
-    font-size: 10px;
-    margin-right: 4px;
-}
-
-.wrap.collapsed {
-    padding: 16px 26px;
-}
-
-.wrap.collapsed #initialView,
-.wrap.collapsed #libraryView,
-.wrap.collapsed #quickReadView,
-.wrap.collapsed .footer-default {
-    display: none !important;
-}
-
-.wrap.collapsed .footer-collapsed {
-    display: block;
+.footer-credit {
+    opacity: .8;
 }
 
 .se-pre-con {
@@ -469,23 +462,22 @@ footer a:hover {
     display: none;
 }
 
-.imgUrl {
-    float: center;
+#output.mode-grid .imgUrl {
     height: 200px;
     padding: 5px;
 }
 
-.imgUrl:hover {
+#output.mode-grid .imgUrl:hover {
     -webkit-transform: scale(1.1);
     transform: scale(1.1);
 }
 
-#output a.last-read {
+#output.mode-grid a.last-read {
     position: relative;
     display: inline-block;
 }
 
-#output a.last-read::before {
+#output.mode-grid a.last-read::before {
     content: 'Last read';
     position: absolute;
     top: 10px;
@@ -502,14 +494,14 @@ footer a:hover {
     z-index: 10;
 }
 
-#output a.last-read .imgUrl {
+#output.mode-grid a.last-read .imgUrl {
     box-shadow: 0 0 0 3px var(--brand),
                 0 8px 24px rgba(37,99,235,.3);
     border-radius: 2px;
 }
 
 @media (prefers-color-scheme: dark) {
-    #output a.last-read .imgUrl {
+    #output.mode-grid a.last-read .imgUrl {
         box-shadow: 0 0 0 3px var(--brand),
                     0 8px 24px rgba(37,99,235,.5);
     }
@@ -524,7 +516,7 @@ footer a:hover {
 }
 
 @media only screen and (max-width: 768px) {
-    .imgUrl {
+    #output.mode-grid .imgUrl {
         height: 120px;
         padding: 5px;
     }
@@ -536,5 +528,288 @@ footer a:hover {
 
     body {
         padding: 20px 0;
+    }
+}
+
+/* ------------------------------------------------------------------
+ * Reader
+ * ------------------------------------------------------------------ */
+
+:root {
+    --reader-bar-height: 52px;
+    --reader-bg: #0e0f11;
+}
+
+body.reader-open {
+    justify-content: flex-start;
+    padding: calc(var(--reader-bar-height) + env(safe-area-inset-top)) 0 0;
+}
+
+body.reader-open .wrap {
+    display: none;
+}
+
+body.reader-open #output {
+    display: block;
+}
+
+body.reader-grid #output {
+    margin-top: 20px;
+    margin-bottom: 40px;
+}
+
+body.reader-strip {
+    background: var(--reader-bg);
+}
+
+.output-header {
+    margin-bottom: 12px;
+}
+
+/* continuous vertical strip: pages stacked edge to edge, no gaps */
+#output.mode-strip {
+    width: 100%;
+    max-width: var(--strip-width, 820px);
+    margin: 0 auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    line-height: 0;
+    font-size: 0;
+}
+
+#output.mode-strip .output-header {
+    display: none;
+}
+
+#output.mode-strip .comic-page {
+    display: block;
+    cursor: default;
+    -webkit-tap-highlight-color: transparent;
+}
+
+#output.mode-strip .imgUrl {
+    display: block;
+    width: 100%;
+    height: auto;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+/* placeholder until the page is extracted */
+#output.mode-strip .imgUrl:not([src]) {
+    aspect-ratio: 2 / 3;
+    background: #1a1c20;
+}
+
+#output.mode-strip .page-error .imgUrl,
+#output.mode-grid .page-error .imgUrl {
+    aspect-ratio: 2 / 3;
+    background: repeating-linear-gradient(45deg, #2a1215, #2a1215 10px, #1f0d10 10px, #1f0d10 20px);
+}
+
+.strip-end {
+    display: none;
+}
+
+#output.mode-strip .strip-end {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    padding: 48px 16px 64px;
+    line-height: normal;
+    font-size: 15px;
+    color: #9ca3af;
+}
+
+.strip-end-title {
+    font-size: 14px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+}
+
+.strip-end-btn {
+    width: auto;
+    margin: 0;
+    padding: 12px 24px;
+    justify-content: center;
+}
+
+.reader-error {
+    padding: 24px;
+    color: #ef4444;
+    text-align: center;
+    line-height: 1.5;
+    font-size: 15px;
+}
+
+#output.mode-strip .reader-error {
+    margin-top: 40px;
+    background: #16181c;
+    border-radius: 12px;
+}
+
+/* toolbar */
+.reader-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: calc(var(--reader-bar-height) + env(safe-area-inset-top));
+    padding: env(safe-area-inset-top) max(10px, env(safe-area-inset-right)) 0 max(10px, env(safe-area-inset-left));
+    background: rgba(14, 15, 17, .86);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid rgba(255, 255, 255, .08);
+    color: #e5e7eb;
+    transition: transform .25s ease;
+}
+
+.reader-bar.rb-hidden {
+    transform: translateY(-100%);
+}
+
+.rb-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0 6px;
+}
+
+.rb-page {
+    flex-shrink: 0;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: #9ca3af;
+    padding: 0 8px;
+}
+
+.rb-group {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, .06);
+}
+
+.rb-btn {
+    flex-shrink: 0;
+    min-width: 36px;
+    height: 36px;
+    padding: 0 9px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    font: 600 13px/1 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+}
+
+.rb-btn svg {
+    width: 16px;
+    height: 16px;
+}
+
+.rb-btn:hover {
+    background: rgba(255, 255, 255, .1);
+}
+
+.rb-btn:focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 1px;
+}
+
+.rb-btn.active {
+    background: var(--brand);
+    color: #fff;
+}
+
+.rb-group .rb-btn {
+    min-width: 32px;
+    height: 32px;
+}
+
+.rb-width {
+    min-width: 44px;
+    border: 1px solid rgba(255, 255, 255, .16);
+}
+
+/* scroll progress, stays visible while the toolbar is hidden */
+.reader-progress {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    z-index: 1001;
+    pointer-events: none;
+}
+
+.reader-progress-fill {
+    height: 100%;
+    background: var(--brand);
+    transform-origin: 0 50%;
+    transform: scaleX(0);
+}
+
+/* "resumed at page" toast */
+.reader-toast {
+    position: fixed;
+    left: 50%;
+    bottom: calc(20px + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    z-index: 1001;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: calc(100% - 32px);
+    padding: 8px 8px 8px 16px;
+    border-radius: 12px;
+    background: rgba(20, 22, 26, .94);
+    border: 1px solid rgba(255, 255, 255, .1);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .4);
+    color: #e5e7eb;
+    font-size: 14px;
+    white-space: nowrap;
+}
+
+.reader-toast .link-btn {
+    color: #93b4ff;
+}
+
+@media only screen and (max-width: 700px) {
+    :root {
+        --reader-bar-height: 48px;
+    }
+
+    .rb-width {
+        display: none;
+    }
+
+    .rb-page {
+        padding: 0 4px;
+    }
+
+    .footer-credit {
+        display: block;
+        margin-top: 4px;
     }
 }
