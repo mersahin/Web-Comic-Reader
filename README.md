@@ -2,6 +2,10 @@
 
 Modern web-based comic book reader for CBR, CBZ, and CBT files with library management and reading progress tracking.
 
+**Live:** https://mersahin.github.io/Web-Comic-Reader/
+
+> Based on [afzafri/Web-Comic-Reader](https://github.com/afzafri/Web-Comic-Reader) (MIT). Upstream history is preserved, so upstream fixes can be merged with `git remote add upstream https://github.com/afzafri/Web-Comic-Reader.git && git fetch upstream && git merge upstream/master`.
+
 ## Features
 
 - **Modern UI** 
@@ -80,6 +84,12 @@ mkcert localhost 127.0.0.1
 npx http-server -p 8000 -S -C localhost+1.pem -K localhost+1-key.pem
 ```
 
+### Deployment (GitHub Pages)
+
+`.github/workflows/pages.yml` publishes the site on every push to the default branch.
+One-time setup: **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+GitHub Pages serves over HTTPS, so Library Mode works on the live site.
+
 ### File Structure
 ```
 ├── index.html              # Main HTML file
@@ -90,6 +100,7 @@ npx http-server -p 8000 -S -C localhost+1.pem -K localhost+1-key.pem
 │       ├── script.js      # Main application logic
 │       └── uncompress/
 │           └── uncompress.js  # Archive extraction
+├── .github/workflows/pages.yml  # GitHub Pages deployment
 ├── README.md
 └── LICENSE
 ```
