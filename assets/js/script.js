@@ -17,6 +17,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const initialViewEl = document.getElementById('initialView');
     const libraryViewEl = document.getElementById('libraryView');
     const quickReadViewEl = document.getElementById('quickReadView');
+    const searchViewEl = document.getElementById('searchView');
+    const searchTelegramBtn = document.getElementById('searchTelegramBtn');
+    const librarySearchBtn = document.getElementById('librarySearchBtn');
+    const searchBackBtn = document.getElementById('searchBackBtn');
+    const reopenNoticeEl = document.getElementById('reopenNotice');
     const browserNoticeEl = document.getElementById('browserNotice');
     const changeFolderBtn = document.getElementById('changeFolderBtn');
     const currentFolderNameEl = document.getElementById('currentFolderName');
@@ -38,6 +43,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const HISTORY_KEY = 'comic_reader_userpref';
     const SETTINGS_KEY = 'comic_reader_settings';
     const PROJECT_START_YEAR = 2026;
+    // recently opened comics are kept in IndexedDB (oldest dropped first) so "Recently Read" reopens them in one click
+    const FILE_CACHE_LIMIT = 1024 * 1024 * 1024;
+    const RECENT_LIMIT = 20;
 
     const STRIP_WIDTHS = [
         { key: 'narrow', label: 'S', px: 640, name: 'Narrow' },
@@ -50,7 +58,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const pageNameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
     let comicsDirectoryHandle = null;
-    let isLibraryMode = false;
+    let currentView = 'initial';
+    let viewBeforeSearch = 'initial';
+    let dbPromise = null;
 
     const settings = loadSettings();
 
@@ -59,6 +69,7 @@ document.addEventListener('DOMContentLoaded', () => {
         open: false,
         token: 0,
         filename: '',
+        source: 'upload',
         pages: [],
         urls: [],
         current: 0,
@@ -207,6 +218,29 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Telegram search entry points
+    [searchTelegramBtn, librarySearchBtn].forEach((btn) => {
+        if (!btn) return;
+        btn.addEventListener('click', () => {
+            viewBeforeSearch = currentView;
+            showSearchView();
+        });
+    });
+
+    if (searchBackBtn) {
+        searchBackBtn.addEventListener('click', async () => {
+            if (viewBeforeSearch === 'library' && comicsDirectoryHandle) {
+                await showLibraryMode();
+            } else if (viewBeforeSearch === 'quick') {
+                showQuickReadMode();
+            } else {
+                showInitialView();
+            }
+        });
+    }
+
+    loadRecentComics();
+
     // load directory handle on startup
     if (supportsFileSystemAccess) {
         loadDirectoryHandle().then(async (result) => {
@@ -221,11 +255,26 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    function showOnly(viewEl) {
+        [initialViewEl, libraryViewEl, quickReadViewEl, searchViewEl].forEach((el) => {
+            if (el) el.style.display = el === viewEl ? 'block' : 'none';
+        });
+    }
+
+    function showInitialView() {
+        currentView = 'initial';
+        showOnly(initialViewEl);
+    }
+
+    function showSearchView() {
+        currentView = 'search';
+        showOnly(searchViewEl);
+        if (window.TelegramFinder) window.TelegramFinder.onShow();
+    }
+
     function showReconnectButton() {
         // show initial view with modified button text
-        initialViewEl.style.display = 'block';
-        libraryViewEl.style.display = 'none';
-        quickReadViewEl.style.display = 'none';
+        showInitialView();
 
         // change button text to indicate reconnection
         const titleEl = selectFolderBtn.querySelector('.btn-title');
@@ -239,10 +288,8 @@ document.addEventListener('DOMContentLoaded', () => {
     async function showLibraryMode() {
         if (!comicsDirectoryHandle) return;
 
-        isLibraryMode = true;
-        initialViewEl.style.display = 'none';
-        libraryViewEl.style.display = 'block';
-        quickReadViewEl.style.display = 'none';
+        currentView = 'library';
+        showOnly(libraryViewEl);
 
         // display current folder name
         if (currentFolderNameEl && comicsDirectoryHandle.name) {
@@ -265,10 +312,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function showQuickReadMode() {
-        isLibraryMode = false;
-        initialViewEl.style.display = 'none';
-        libraryViewEl.style.display = 'none';
-        quickReadViewEl.style.display = 'block';
+        currentView = 'quick';
+        showOnly(quickReadViewEl);
 
         // reset button text in case it was changed
         const titleEl = selectFolderBtn.querySelector('.btn-title');
@@ -284,9 +329,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // re-show the panel after the reader was closed
+    // re-show the view the comic was opened from after the reader was closed
     async function showPanel() {
-        if (isLibraryMode && comicsDirectoryHandle) {
+        if (currentView === 'library' && comicsDirectoryHandle) {
             // check permission again when returning
             const permission = await comicsDirectoryHandle.queryPermission({ mode: 'read' });
             if (permission === 'granted') {
@@ -294,9 +339,14 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 showReconnectButton();
             }
-        } else if (!isLibraryMode) {
+        } else if (currentView === 'search') {
+            showSearchView();
+        } else if (currentView === 'quick') {
             showQuickReadMode();
+        } else {
+            showInitialView();
         }
+        await loadRecentComics();
     }
 
     async function loadAllComics() {
@@ -337,7 +387,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const readingHistory = readHistory();
 
             for (const filename of comics) {
-                const item = createComicItem(filename, readingHistory[filename], null);
+                const data = readingHistory[filename];
+                const progress = data ? progressInfo(data) : null;
+                const item = createComicItem(filename, data, progress?.label, progress?.ratio);
                 item.addEventListener('click', () => openComicFromFolder(filename));
                 allComicsListEl.appendChild(item);
             }
@@ -384,8 +436,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // builds a list row; `meta` is optional secondary text
-    function createComicItem(filename, data, meta) {
+    // builds a list row; `meta` is optional secondary text, `ratio` (0..1) adds a progress bar
+    function createComicItem(filename, data, meta, ratio = null) {
         const item = document.createElement('div');
         item.className = 'recent-comic-item';
 
@@ -415,6 +467,19 @@ document.addEventListener('DOMContentLoaded', () => {
             metaEl.textContent = meta;
             info.appendChild(metaEl);
         }
+        if (ratio !== null && ratio !== undefined) {
+            const bar = document.createElement('div');
+            bar.className = 'comic-progress';
+            bar.setAttribute('role', 'progressbar');
+            bar.setAttribute('aria-valuemin', '0');
+            bar.setAttribute('aria-valuemax', '100');
+            bar.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
+            const fill = document.createElement('div');
+            fill.className = 'comic-progress-fill' + (ratio >= 1 ? ' done' : '');
+            fill.style.width = `${Math.round(ratio * 100)}%`;
+            bar.appendChild(fill);
+            info.appendChild(bar);
+        }
 
         item.append(icon, info);
         return item;
@@ -443,12 +508,18 @@ document.addEventListener('DOMContentLoaded', () => {
      * Reader
      * ------------------------------------------------------------------ */
 
-    function openComic(file) {
+    function openComic(file, options = {}) {
         resetReaderContent();
         const token = reader.token;
 
         reader.open = true;
         reader.filename = file.name;
+        reader.source = options.source || 'upload';
+        if (reopenNoticeEl) reopenNoticeEl.hidden = true;
+        if (reader.source !== 'folder') {
+            // library files can be reopened from the folder; everything else gets a local copy
+            cacheComicFile(file, reader.source);
+        }
 
         document.body.classList.add('reader-open');
         readerBarEl.hidden = false;
@@ -535,6 +606,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         generateThumbnail(token);
         await restorePosition(token);
+        if (token === reader.token) {
+            // records the page count so "Recently Read" can show a percentage right away
+            saveLastPageRead(reader.filename, reader.current);
+        }
     }
 
     function readEntryData(entry) {
@@ -566,7 +641,7 @@ document.addEventListener('DOMContentLoaded', () => {
         end.innerHTML = '<div class="strip-end-title">End of comic</div>';
         const closeBtn = document.createElement('button');
         closeBtn.className = 'folder-btn folder-btn-primary strip-end-btn';
-        closeBtn.textContent = isLibraryMode ? 'Back to library' : 'Close';
+        closeBtn.textContent = currentView === 'library' ? 'Back to library' : 'Close';
         closeBtn.addEventListener('click', closeReader);
         end.appendChild(closeBtn);
         return end;
@@ -1093,18 +1168,34 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    /*
+     * Reading history: localStorage, one entry per file name
+     *   { last_page, total_pages, source, timestamp, thumbnail, hidden_from_recent }
+     * Kept behind readHistory/writeHistory/saveLastPageRead so a synced store can replace it later.
+     */
     function saveLastPageRead(filename, pageIndex, thumbnail = null) {
         const readingHistory = readHistory();
         const existing = readingHistory[filename] || {};
-        const finalThumbnail = thumbnail || existing.thumbnail || null;
+        const isOpen = reader.open && filename === reader.filename;
 
-        // reading a comic again brings it back into "Recently Read"
+        // reading a comic again brings it back into "Recently Read" (no hidden flag)
         readingHistory[filename] = {
             last_page: pageIndex,
+            total_pages: (isOpen && reader.pages.length) ? reader.pages.length : (existing.total_pages || null),
+            source: isOpen ? reader.source : (existing.source || null),
             timestamp: Date.now(),
-            thumbnail: finalThumbnail
+            thumbnail: thumbnail || existing.thumbnail || null
         };
         writeHistory(readingHistory);
+    }
+
+    function progressInfo(data) {
+        const page = (data.last_page || 0) + 1;
+        const total = data.total_pages || 0;
+        if (!total) return { label: `Page ${page}`, ratio: null };
+        if (page >= total) return { label: `Finished · ${total} pages`, ratio: 1 };
+        const ratio = page / total;
+        return { label: `Page ${page} of ${total} · ${Math.round(ratio * 100)}%`, ratio };
     }
 
     function getLastPageRead(filename) {
@@ -1119,21 +1210,92 @@ document.addEventListener('DOMContentLoaded', () => {
             if (readingHistory[name]) readingHistory[name].hidden_from_recent = true;
         });
         writeHistory(readingHistory);
+        // the list entry is gone, so its offline copy is no longer needed
+        deleteCachedComics(names);
     }
 
-    // IndexedDB functions for storing directory handle
+    // IndexedDB: 'directories' holds the library folder handle, 'files' the offline copies of opened comics
     function openDB() {
+        if (!dbPromise) {
+            dbPromise = new Promise((resolve, reject) => {
+                const request = indexedDB.open('ComicReaderDB', 2);
+                request.onerror = () => reject(request.error);
+                request.onsuccess = () => resolve(request.result);
+                request.onupgradeneeded = (event) => {
+                    const db = event.target.result;
+                    if (!db.objectStoreNames.contains('directories')) {
+                        db.createObjectStore('directories');
+                    }
+                    if (!db.objectStoreNames.contains('files')) {
+                        db.createObjectStore('files');
+                    }
+                };
+            });
+            dbPromise.catch(() => { dbPromise = null; });
+        }
+        return dbPromise;
+    }
+
+    async function fileStore(mode, action) {
+        const db = await openDB();
         return new Promise((resolve, reject) => {
-            const request = indexedDB.open('ComicReaderDB', 1);
-            request.onerror = () => reject(request.error);
-            request.onsuccess = () => resolve(request.result);
-            request.onupgradeneeded = (event) => {
-                const db = event.target.result;
-                if (!db.objectStoreNames.contains('directories')) {
-                    db.createObjectStore('directories');
-                }
-            };
+            const tx = db.transaction('files', mode);
+            const request = action(tx.objectStore('files'));
+            let result;
+            if (request) request.onsuccess = () => { result = request.result; };
+            tx.oncomplete = () => resolve(result);
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
         });
+    }
+
+    async function cacheComicFile(file, source) {
+        try {
+            if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+            await fileStore('readwrite', (store) => store.put({
+                name: file.name,
+                blob: file,
+                size: file.size,
+                type: file.type,
+                source,
+                lastOpened: Date.now()
+            }, file.name));
+            await pruneFileCache();
+        } catch (err) {
+            console.warn('Could not keep an offline copy of this comic:', err);
+        }
+    }
+
+    async function getCachedComic(name) {
+        try {
+            const record = await fileStore('readonly', (store) => store.get(name));
+            if (!record) return null;
+            return { file: new File([record.blob], record.name, { type: record.type || 'application/octet-stream' }), source: record.source };
+        } catch (err) {
+            console.warn('Could not read the offline copy:', err);
+            return null;
+        }
+    }
+
+    function deleteCachedComics(names) {
+        if (!names.length) return Promise.resolve();
+        return fileStore('readwrite', (store) => {
+            names.forEach((name) => store.delete(name));
+            return null;
+        }).catch((err) => console.warn('Could not delete offline copies:', err));
+    }
+
+    async function pruneFileCache() {
+        const records = await fileStore('readonly', (store) => store.getAll());
+        records.sort((a, b) => a.lastOpened - b.lastOpened);
+        let total = records.reduce((sum, record) => sum + (record.size || 0), 0);
+        const drop = [];
+        while (total > FILE_CACHE_LIMIT && records.length > 1) {
+            const oldest = records.shift();
+            total -= oldest.size || 0;
+            drop.push(oldest.name);
+        }
+        await deleteCachedComics(drop);
     }
 
     async function saveDirectoryHandle(dirHandle) {
@@ -1181,15 +1343,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const recentComics = Object.entries(readHistory())
                 .filter(([, data]) => data && !data.hidden_from_recent)
                 .sort((a, b) => b[1].timestamp - a[1].timestamp)
-                .slice(0, 5);
+                .slice(0, RECENT_LIMIT);
 
             recentComicsListEl.innerHTML = '';
 
             for (const [filename, data] of recentComics) {
+                const progress = progressInfo(data);
                 const item = createComicItem(
                     filename,
                     data,
-                    `Page ${(data.last_page || 0) + 1} • ${formatTimestamp(data.timestamp)}`
+                    `${progress.label} • ${formatTimestamp(data.timestamp)}`,
+                    progress.ratio
                 );
 
                 const removeBtn = document.createElement('button');
@@ -1204,7 +1368,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 item.appendChild(removeBtn);
 
-                item.addEventListener('click', () => openComicFromFolder(filename));
+                item.addEventListener('click', () => openRecent(filename));
                 recentComicsListEl.appendChild(item);
             }
 
@@ -1214,15 +1378,25 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function removeComicFromHistory(filename) {
-        const readingHistory = readHistory();
-        if (readingHistory[filename]) {
-            delete readingHistory[filename];
-            writeHistory(readingHistory);
-
-            // Refresh UI (hides the section when the list becomes empty)
-            await loadRecentComics();
+    // offline copy first, then the library folder, otherwise ask for the file again
+    async function openRecent(filename) {
+        const cached = await getCachedComic(filename);
+        if (cached) {
+            openComic(cached.file, { source: cached.source || 'upload' });
+            return;
         }
+        if (comicsDirectoryHandle) {
+            await openComicFromFolder(filename);
+            return;
+        }
+        showReopenNotice(filename);
+    }
+
+    function showReopenNotice(filename) {
+        showQuickReadMode();
+        const page = (readHistory()[filename]?.last_page || 0) + 1;
+        reopenNoticeEl.textContent = `"${filename}" is not stored in this browser any more. Select the file again and reading continues at page ${page}.`;
+        reopenNoticeEl.hidden = false;
     }
 
     async function openComicFromFolder(filename) {
@@ -1244,14 +1418,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const fileHandle = await comicsDirectoryHandle.getFileHandle(filename);
             const file = await fileHandle.getFile();
-            openComic(file);
+            openComic(file, { source: 'folder' });
         } catch (err) {
             console.error('Failed to open comic:', err);
             if (err.name === 'NotAllowedError') {
                 showReconnectButton();
             } else {
-                alert('Could not find this comic in the selected folder. Please re-upload it or select a different folder.');
-                await removeComicFromHistory(filename);
+                // keep the history entry: the file may come back or be selected manually
+                showReopenNotice(filename);
             }
         }
     }
@@ -1269,4 +1443,19 @@ document.addEventListener('DOMContentLoaded', () => {
         if (minutes > 0) return `${minutes}m ago`;
         return 'Just now';
     }
+
+    // small API used by telegram-finder.js
+    window.ComicReader = {
+        openFile(file, source = 'telegram') {
+            openComic(file, { source });
+        },
+        async hasOfflineCopy(name) {
+            try {
+                return (await fileStore('readonly', (store) => store.getKey(name))) !== undefined;
+            } catch (err) {
+                return false;
+            }
+        },
+        openRecent
+    };
 });

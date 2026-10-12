@@ -1,0 +1,4 @@
+# Telethon login session (your Telegram account)
+*.session
+*.session-journal
+__pycache__/

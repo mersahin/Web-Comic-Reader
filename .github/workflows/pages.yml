@@ -26,8 +26,9 @@ jobs:
 
       - name: Assemble site
         run: |
-          mkdir -p _site
+          mkdir -p _site/tools/tg-finder
           cp -r index.html assets .nojekyll _site/
+          cp tools/tg-finder/tg_finder.py _site/tools/tg-finder/
 
       - uses: actions/configure-pages@v6
 

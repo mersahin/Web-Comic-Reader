@@ -44,6 +44,14 @@
                     <div class="btn-subtitle">Upload individual files, progress saved in this browser</div>
                 </div>
             </button>
+
+            <button id="searchTelegramBtn" class="folder-btn folder-btn-secondary">
+                <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="7" cy="7" r="5"/><path d="M11 11l3.5 3.5"/></svg>
+                <div>
+                    <div class="btn-title">Search Telegram</div>
+                    <div class="btn-subtitle">Find CBZ/CBR files in public Telegram channels</div>
+                </div>
+            </button>
         </div>
 
         <div id="libraryView" style="display:none;">
@@ -56,15 +64,9 @@
                     <button id="changeFolderBtn" class="link-btn">Change folder</button>
                     <span class="header-divider">•</span>
                     <button id="toggleUploadBtn" class="link-btn">Quick read</button>
+                    <span class="header-divider">•</span>
+                    <button id="librarySearchBtn" class="link-btn">Search</button>
                 </div>
-            </div>
-
-            <div id="recentComics" style="display:none;">
-                <div class="section-header">
-                    <h3>Recently Read</h3>
-                    <button id="clearRecentBtn" class="link-btn link-btn-small" title="Remove all comics from this list. Reading progress is kept.">Clear</button>
-                </div>
-                <div id="recentComicsList"></div>
             </div>
 
             <div id="allComics" style="display:none;">
@@ -84,7 +86,62 @@
                     <div class="hint">(cbr, cbz, cbt only) • Progress is saved in this browser</div>
                 </div>
             </form>
+            <div id="reopenNotice" class="notice" hidden></div>
         </div>
+
+        <div id="searchView" style="display:none;">
+            <div class="library-header">
+                <div class="library-header-left">
+                    <h1>Search Telegram</h1>
+                    <div id="finderStatus" class="current-folder finder-status" data-state="unknown">Checking local helper…</div>
+                </div>
+                <div class="library-header-actions">
+                    <button id="searchBackBtn" class="link-btn">Back</button>
+                </div>
+            </div>
+
+            <form id="finderSearchForm" class="finder-search" autocomplete="off">
+                <input id="finderQuery" type="search" placeholder="Comic name, e.g. Batman" aria-label="Search term" required minlength="2">
+                <button type="submit" class="finder-submit">Search</button>
+            </form>
+
+            <details id="finderSetup" class="finder-card">
+                <summary>Local helper setup</summary>
+                <p>Telegram and search engines do not let websites read their pages, so a small helper runs on your computer and does the searching. Nothing is sent anywhere else.</p>
+                <ol>
+                    <li>Download <a id="finderHelperLink" href="./tools/tg-finder/tg_finder.py" download="tg_finder.py">tg_finder.py</a> (needs Python 3).</li>
+                    <li>Run it and keep the window open:<pre><code>python3 tg_finder.py</code></pre></li>
+                    <li>Optional, to read files directly here: create an API ID at <a href="https://my.telegram.org/apps" target="_blank" rel="noopener">my.telegram.org</a>, <code>pip install telethon</code>, then start with<pre><code>python3 tg_finder.py --api-id 12345 --api-hash abcdef…</code></pre>The first start asks for your phone number and login code in that window. Your Telegram login stays on your computer.</li>
+                    <li>Chrome may ask to allow access to devices on your local network. Allow it.</li>
+                </ol>
+                <label class="finder-field">Helper address
+                    <input id="finderHelperUrl" type="url" value="http://127.0.0.1:8787" spellcheck="false">
+                </label>
+                <button id="finderRetryBtn" type="button" class="link-btn link-btn-small">Check again</button>
+            </details>
+
+            <details id="finderChannels" class="finder-card">
+                <summary>My channels <span id="finderChannelCount" class="finder-count"></span></summary>
+                <p>These public channels are always searched, in addition to the ones found on the web.</p>
+                <textarea id="finderChannelList" rows="3" spellcheck="false" placeholder="@channelname or https://t.me/channelname, one per line"></textarea>
+                <div class="finder-row">
+                    <input id="finderBrowseInput" type="text" placeholder="Browse one channel: @name or t.me link" spellcheck="false" aria-label="Channel to browse">
+                    <button id="finderBrowseBtn" type="button" class="link-btn link-btn-small">Browse</button>
+                </div>
+            </details>
+
+            <div id="finderMessage" class="notice" hidden></div>
+            <div id="finderResults"></div>
+        </div>
+
+        <div id="recentComics" style="display:none;">
+            <div class="section-header">
+                <h3>Recently Read</h3>
+                <button id="clearRecentBtn" class="link-btn link-btn-small" title="Remove all comics from this list. Reading progress is kept.">Clear</button>
+            </div>
+            <div id="recentComicsList"></div>
+        </div>
+
         <footer class="footer-default">
             mersahin <span id="currYear"></span>
             <span class="footer-credit">&middot; based on <a href="https://github.com/afzafri/Web-Comic-Reader" target="_blank" rel="noopener">Web Comic Reader</a> by Afif Zafri</span>
@@ -134,5 +191,6 @@
     <script src="https://cdn.jsdelivr.net/npm/lg-rotate.js@1.2.0/dist/lg-rotate.min.js"></script>
     <script src="https://unpkg.com/dropzone@6.3.5/dist/dropzone-min.js"></script>
     <script src="./assets/js/script.js"></script>
+    <script src="./assets/js/telegram-finder.js"></script>
 </body>
 </html>

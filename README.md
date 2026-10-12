@@ -17,7 +17,9 @@ Modern web-based comic book reader for CBR, CBZ, and CBT files with library mana
 - **Library Mode** - Select your comics folder once, access anytime with persistent folder access
 - **Reading Progress** - Automatically saves your last read page and scrolls to it when you reopen
 - **Thumbnail Previews** - Auto-generated cover thumbnails for quick comic recognition
-- **Recently Read** - Quick access to your last 5 comics with progress indicators; remove single entries or clear the list (progress is kept)
+- **Recently Read** - On the start screen: your last 20 comics with page, percentage and a progress bar; remove single entries or clear the list (progress is kept)
+- **Offline Copies** - Comics you open (uploads and Telegram downloads) are kept in the browser (IndexedDB, up to 1 GB, oldest dropped first) so Recently Read reopens them in one click
+- **Telegram Search** - Type a title; a small local helper searches the web for `site:t.me` channels, scans their public pages for CBZ/CBR/CBT files and, optionally, downloads them straight into the reader
 - **Quick Read Mode** - Upload and read individual files without library setup
 - **Client-Side Only** - All processing happens in your browser, no server uploads required
 - **Offline Support** - Works completely offline after initial load
@@ -35,6 +37,28 @@ Modern web-based comic book reader for CBR, CBZ, and CBT files with library mana
 1. Click "Quick Read"
 2. Upload a single CBR/CBZ/CBT file
 3. Read immediately (progress is remembered per file name in this browser)
+
+### Telegram Search
+Browsers cannot read t.me or search-engine pages from another website (they send no CORS headers), so the searching is done by a small helper that runs on your own computer: [`tools/tg-finder/tg_finder.py`](tools/tg-finder/tg_finder.py). It only listens on `127.0.0.1` and only answers this site and `localhost`.
+
+```bash
+# search only: Python 3, no extra packages
+python3 tools/tg-finder/tg_finder.py
+
+# search + read files directly in the site, through your own Telegram account
+pip install telethon
+python3 tools/tg-finder/tg_finder.py --api-id 12345 --api-hash <hash from my.telegram.org/apps>
+```
+
+How a search works:
+1. The helper searches the web for `site:t.me <title>` (DuckDuckGo, DuckDuckGo Lite, then Bing) and collects channel names. With an API ID it also uses Telegram's own channel search.
+2. Channels listed under **My channels** in the site are always included.
+3. Each channel's public page (`t.me/s/<channel>?q=<title>`) is scanned for `.cbz`, `.cbr` and `.cbt` files. If none match but the channel name did, its latest comics are shown.
+4. **Read** downloads the file through the helper (only with `--api-id`), keeps an offline copy and opens it. Files from channels that disable saving are not downloaded.
+
+Without `--api-id`, results still link to the post in Telegram; a downloaded file can be dropped into Quick Read. The first start with `--api-id` asks for your phone number and login code in the terminal; the session file (`tg_finder.session`) stays next to the script. Chrome may ask to allow access to your local network the first time.
+
+Search engines may answer with a captcha after many searches; the site shows which sources failed.
 
 ### Keyboard Shortcuts (while reading)
 | Key | Action |
@@ -114,8 +138,10 @@ GitHub Pages serves over HTTPS, so Library Mode works on the live site.
 │   │   └── styles.css     # All styles and theming
 │   └── js/
 │       ├── script.js      # Main application logic
+│       ├── telegram-finder.js  # Telegram search UI (talks to the local helper)
 │       └── uncompress/
 │           └── uncompress.js  # Archive extraction
+├── tools/tg-finder/tg_finder.py # Local helper for Telegram search
 ├── .github/workflows/pages.yml  # GitHub Pages deployment
 ├── README.md
 └── LICENSE
@@ -124,6 +150,8 @@ GitHub Pages serves over HTTPS, so Library Mode works on the live site.
 ### Development Notes
 - Reading progress is stored in `localStorage` (key: `comic_reader_userpref`)
 - Reader settings (view mode, page width) are stored in `localStorage` (key: `comic_reader_settings`)
+- Reading history entries hold `last_page`, `total_pages`, `source`, `timestamp`, `thumbnail` and `hidden_from_recent`; all access goes through `readHistory`/`writeHistory`/`saveLastPageRead`, the seam for a future synced store
+- Offline copies live in IndexedDB `ComicReaderDB` (store `files`); Telegram search settings in `localStorage` (key: `comic_reader_finder`)
 - Archive pages are filtered to images (`__MACOSX`, dotfiles and metadata such as `ComicInfo.xml` are skipped) and sorted naturally (`page2` before `page10`)
 - Folder handles are stored in `IndexedDB` (database: `ComicReaderDB`)
 - Thumbnails are base64-encoded JPEG stored in localStorage
