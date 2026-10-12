@@ -16,6 +16,7 @@ API ID/hash from https://my.telegram.org/apps):
 Endpoints (all GET, JSON unless noted):
     /health                         status, whether downloads are enabled
     /search?q=batman                web search "site:t.me <q>" -> channels -> comic files
+    /discover?q=batman              only the channel names found by the web search
     /channel?u=name[&q=..][&before=id]  comic files in one public channel
     /download?u=name&id=123         file bytes (only with --api-id/--api-hash)
 """
@@ -436,6 +437,12 @@ def make_handler(allowed_origins, downloader):
                 elif url.path == "/search":
                     extra = [c.strip().lstrip("@") for c in args.get("channels", "").split(",") if c.strip()]
                     self._json(200, search(args.get("q", ""), extra[:20], downloader))
+                elif url.path == "/discover":
+                    keyword = args.get("q", "").strip()
+                    if len(keyword) < 2:
+                        raise HelperError(400, "Search term is too short")
+                    names, engines, errors = web_search_channels(keyword)
+                    self._json(200, {"query": keyword, "channels": names, "engines": engines, "errors": errors})
                 elif url.path == "/channel":
                     username = args.get("u", "").lstrip("@")
                     before = int(args["before"]) if args.get("before", "").isdigit() else None

@@ -1,0 +1,15 @@
+{
+  "name": "telegram-bundle",
+  "private": true,
+  "description": "Builds assets/js/vendor/telegram.js, the GramJS browser bundle used by Search Telegram",
+  "scripts": {
+    "build": "esbuild entry.js --bundle --format=iife --minify --platform=browser --target=es2020 --define:global=globalThis --inject:./shim.js --legal-comments=eof --outfile=../../assets/js/vendor/telegram.js"
+  },
+  "dependencies": {
+    "buffer": "6.0.3",
+    "telegram": "2.26.21"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10"
+  }
+}

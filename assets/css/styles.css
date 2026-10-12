@@ -1235,3 +1235,50 @@ body.reader-strip {
         display: none;
     }
 }
+
+.finder-form {
+    margin-top: 6px;
+}
+
+.finder-grid {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: 10px;
+}
+
+.finder-form .finder-field input {
+    padding: 9px 12px;
+    font-size: 14px;
+    font-weight: normal;
+}
+
+.finder-hint {
+    margin: 4px 0 12px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.finder-form .finder-submit {
+    padding: 11px 18px;
+}
+
+.finder-actions-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+@media only screen and (max-width: 520px) {
+    .finder-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.finder-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 10px;
+    font-size: 13px;
+    cursor: pointer;
+}

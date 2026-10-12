@@ -19,7 +19,7 @@ Modern web-based comic book reader for CBR, CBZ, and CBT files with library mana
 - **Thumbnail Previews** - Auto-generated cover thumbnails for quick comic recognition
 - **Recently Read** - On the start screen: your last 20 comics with page, percentage and a progress bar; remove single entries or clear the list (progress is kept)
 - **Offline Copies** - Comics you open (uploads and Telegram downloads) are kept in the browser (IndexedDB, up to 1 GB, oldest dropped first) so Recently Read reopens them in one click
-- **Telegram Search** - Type a title; a small local helper searches the web for `site:t.me` channels, scans their public pages for CBZ/CBR/CBT files and, optionally, downloads them straight into the reader
+- **Telegram Search** - Sign in once with your own Telegram API ID, type a title and read CBZ/CBR/CBT files from public channels right in the browser; an optional local helper adds `site:t.me` web search
 - **Quick Read Mode** - Upload and read individual files without library setup
 - **Client-Side Only** - All processing happens in your browser, no server uploads required
 - **Offline Support** - Works completely offline after initial load
@@ -39,26 +39,38 @@ Modern web-based comic book reader for CBR, CBZ, and CBT files with library mana
 3. Read immediately (progress is remembered per file name in this browser)
 
 ### Telegram Search
-Browsers cannot read t.me or search-engine pages from another website (they send no CORS headers), so the searching is done by a small helper that runs on your own computer: [`tools/tg-finder/tg_finder.py`](tools/tg-finder/tg_finder.py). It only listens on `127.0.0.1` and only answers this site and `localhost`.
+Open **Search Telegram**, sign in once under **Telegram account** with your own API ID and API hash from [my.telegram.org/apps](https://my.telegram.org/apps), your phone number and the login code (plus your two-step password if you use one). A bot token from BotFather does not work.
 
-```bash
-# search only: Python 3, no extra packages
-python3 tools/tg-finder/tg_finder.py
-
-# search + read files directly in the site, through your own Telegram account
-pip install telethon
-python3 tools/tg-finder/tg_finder.py --api-id 12345 --api-hash <hash from my.telegram.org/apps>
-```
+Everything then runs in the browser, nothing to install: the bundled [GramJS](https://github.com/gram-js/gramjs) client (`assets/js/vendor/telegram.js`) talks to Telegram directly over WebSocket.
 
 How a search works:
-1. The helper searches the web for `site:t.me <title>` (DuckDuckGo, DuckDuckGo Lite, then Bing) and collects channel names. With an API ID it also uses Telegram's own channel search.
-2. Channels listed under **My channels** in the site are always included.
-3. Each channel's public page (`t.me/s/<channel>?q=<title>`) is scanned for `.cbz`, `.cbr` and `.cbt` files. If none match but the channel name did, its latest comics are shown.
-4. **Read** downloads the file through the helper (only with `--api-id`), keeps an offline copy and opens it. Files from channels that disable saving are not downloaded.
+1. Channels listed under **My channels** are always searched.
+2. Telegram's own channel search finds public channels matching the title.
+3. Each channel is searched for documents; only `.cbz`, `.cbr` and `.cbt` files are listed. If none match but the channel name did, its latest comics are shown.
+4. Files in chats you have joined are searched too.
+5. **Read** downloads the file with a progress bar, keeps an offline copy and opens it. Files from channels that disable saving are not downloaded.
 
-Without `--api-id`, results still link to the post in Telegram; a downloaded file can be dropped into Quick Read. The first start with `--api-id` asks for your phone number and login code in the terminal; the session file (`tg_finder.session`) stays next to the script. Chrome may ask to allow access to your local network the first time.
+Where the login is kept:
+- `localStorage` holds only the API ID.
+- The Telegram session and API hash live in `sessionStorage` and disappear when the tab is closed.
+- **Remember me on this device** stores them encrypted with your passphrase (PBKDF2-SHA256, 310,000 iterations, AES-GCM). The next visit asks for the passphrase. This matters because every GitHub Pages project under the same `<user>.github.io` address shares `localStorage`.
+- **Log out** ends the Telegram session and deletes both copies; **Forget this device** deletes the saved one.
 
-Search engines may answer with a captcha after many searches; the site shows which sources failed.
+All third-party scripts and styles are pinned with Subresource Integrity hashes.
+
+#### Optional: web search through a local helper
+Search engines and t.me pages cannot be read by a website (no CORS headers), so `site:t.me` web search needs [`tools/tg-finder/tg_finder.py`](tools/tg-finder/tg_finder.py) running on a computer (Python 3, standard library only). When it runs next to a signed-in browser, its web results are added as extra channels; without a Telegram login it can search on its own and, with `--api-id/--api-hash` and Telethon, download as well.
+
+```bash
+python3 tools/tg-finder/tg_finder.py
+```
+
+It listens only on `127.0.0.1` and answers only this site and `localhost`. Search engines may show captchas after many searches; the site lists which sources failed.
+
+#### Rebuilding the Telegram client bundle
+```bash
+cd tools/telegram-bundle && npm ci && npm run build
+```
 
 ### Keyboard Shortcuts (while reading)
 | Key | Action |
@@ -138,10 +150,12 @@ GitHub Pages serves over HTTPS, so Library Mode works on the live site.
 │   │   └── styles.css     # All styles and theming
 │   └── js/
 │       ├── script.js      # Main application logic
-│       ├── telegram-finder.js  # Telegram search UI (talks to the local helper)
+│       ├── telegram-finder.js  # Telegram search UI (in-browser client or local helper)
+│       ├── vendor/telegram.js  # GramJS browser bundle (built by tools/telegram-bundle)
 │       └── uncompress/
 │           └── uncompress.js  # Archive extraction
-├── tools/tg-finder/tg_finder.py # Local helper for Telegram search
+├── tools/tg-finder/tg_finder.py # Optional local helper (web search)
+├── tools/telegram-bundle/       # Build script for the GramJS bundle
 ├── .github/workflows/pages.yml  # GitHub Pages deployment
 ├── README.md
 └── LICENSE
@@ -151,7 +165,7 @@ GitHub Pages serves over HTTPS, so Library Mode works on the live site.
 - Reading progress is stored in `localStorage` (key: `comic_reader_userpref`)
 - Reader settings (view mode, page width) are stored in `localStorage` (key: `comic_reader_settings`)
 - Reading history entries hold `last_page`, `total_pages`, `source`, `timestamp`, `thumbnail` and `hidden_from_recent`; all access goes through `readHistory`/`writeHistory`/`saveLastPageRead`, the seam for a future synced store
-- Offline copies live in IndexedDB `ComicReaderDB` (store `files`); Telegram search settings in `localStorage` (key: `comic_reader_finder`)
+- Offline copies live in IndexedDB `ComicReaderDB` (store `files`); Telegram search settings in `localStorage` (key: `comic_reader_finder`); Telegram login in `comic_reader_tg` (API ID only), `sessionStorage` `comic_reader_tg_tab` and the encrypted `comic_reader_tg_vault`
 - Archive pages are filtered to images (`__MACOSX`, dotfiles and metadata such as `ComicInfo.xml` are skipped) and sorted naturally (`page2` before `page10`)
 - Folder handles are stored in `IndexedDB` (database: `ComicReaderDB`)
 - Thumbnails are base64-encoded JPEG stored in localStorage
