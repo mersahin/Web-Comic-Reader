@@ -67,6 +67,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const pageNameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
     // rar/tar pages that never call back are given up after this long
     const PAGE_READ_TIMEOUT = 30000;
+    // the keep-the-screen-on lock is let go after this long without turning a page or scrolling
+    const WAKE_LOCK_IDLE = 10 * 60 * 1000;
     // shown (and opened in the gallery) in place of a page that could not be extracted
     const PAGE_ERROR_SRC = 'data:image/svg+xml,' + encodeURIComponent(
         '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="600" viewBox="0 0 400 600">'
@@ -92,6 +94,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let applyingRemoteSettings = false;
     // a view mode that arrived from sync while reading; applied when the reader closes
     let pendingRemoteMode = null;
+    // layout width the strip pages were last sized for (see keepAnchorAfterResize)
+    let lastWidth = document.documentElement.clientWidth;
 
     // reader state; `token` invalidates async work of a previously opened comic
     const reader = {
@@ -114,7 +118,15 @@ document.addEventListener('DOMContentLoaded', () => {
         barHidden: false,
         toastTimer: null,
         toastAction: null,
-        scrollRaf: 0
+        scrollRaf: 0,
+        resizeRaf: 0,
+        // strip mode: the spot under the reading line, { index, ratio of the page height }
+        anchor: null,
+        // a Close is waiting for history.back() to reach popstate
+        closing: false,
+        wakeLock: null,
+        wakeLockPending: false,
+        wakeTimer: null
     };
 
     // small API used by telegram-finder.js and cloud-sync.js. Assigned before any setup code runs
@@ -693,6 +705,10 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.source = options.source || 'upload';
         reader.file = file;
         reader.fromCache = Boolean(options.fromCache);
+        // one history entry (same URL) per reading session, so Back closes the comic;
+        // a comic opened from inside the reader reuses it
+        if (!isReaderEntry()) pushReaderEntry();
+        keepScreenOn();
         document.dispatchEvent(new CustomEvent('comicreader:reader-opened', { detail: { filename: file.name } }));
         if (reopenNoticeEl) reopenNoticeEl.hidden = true;
 
@@ -885,7 +901,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const closeBtn = document.createElement('button');
         closeBtn.className = 'folder-btn folder-btn-primary strip-end-btn';
         closeBtn.textContent = currentView === 'library' ? 'Back to library' : 'Close';
-        closeBtn.addEventListener('click', closeReader);
+        closeBtn.addEventListener('click', requestClose);
         end.appendChild(closeBtn);
         return end;
     }
@@ -915,13 +931,46 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.fromCache = false;
         reader.current = 0;
         reader.tracking = false;
+        reader.anchor = null;
+        reader.closing = false;
         outputElement.innerHTML = '';
         hideToast();
+    }
+
+    // closes through the reader's history entry when there is one, so Back afterwards leaves the site
+    // instead of landing on a dead entry; popstate does the actual closing
+    function requestClose() {
+        if (!reader.open || reader.closing) return;
+        if (!isReaderEntry()) {
+            closeReader();
+            return;
+        }
+        // a second Close before popstate would go back one entry too far
+        reader.closing = true;
+        const token = reader.token;
+        window.history.back();
+        setTimeout(() => {
+            if (reader.closing && token === reader.token) closeReader();
+        }, 1000);
+    }
+
+    function isReaderEntry() {
+        return Boolean(window.history.state && window.history.state.reader);
+    }
+
+    function pushReaderEntry() {
+        try {
+            window.history.pushState({ reader: true }, '');
+        } catch (err) {
+            // Safari throws after too many calls in a short time; the reader works without the entry
+            console.warn('Could not add a history entry for the reader:', err);
+        }
     }
 
     async function closeReader() {
         if (!reader.open) return;
         resetReaderContent();
+        releaseWakeLock();
         reader.open = false;
         reader.filename = '';
         sePreConElement.style.display = 'none';
@@ -1000,7 +1049,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const lastRect = pages[pages.length - 1].getBoundingClientRect();
         if (atBottom && lastRect.top < window.innerHeight) return pages.length - 1;
 
-        const probe = window.innerHeight * 0.4;
+        const probe = readingLine();
         let lo = 0;
         let hi = pages.length - 1;
         let found = 0;
@@ -1032,19 +1081,48 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function readingLine() {
+        return window.innerHeight * 0.4;
+    }
+
+    // where the reading line crosses page `index`, as a share of that page's height
+    function readingAnchor(index) {
+        const rect = reader.pages[index].getBoundingClientRect();
+        return { index, ratio: rect.height ? (readingLine() - rect.top) / rect.height : 0 };
+    }
+
+    // scrolls so that the anchored spot of its page is on the reading line again
+    function scrollToAnchor(anchor) {
+        const page = reader.pages[anchor.index];
+        if (!page) return;
+        const rect = page.getBoundingClientRect();
+        window.scrollTo(0, window.scrollY + rect.top + anchor.ratio * rect.height - readingLine());
+    }
+
     // keeps the reading position stable across layout changes (e.g. page width)
     function preservePosition(change) {
         if (settings.mode !== 'strip' || reader.pages.length === 0) {
             change();
             return;
         }
-        const index = pageAtViewport();
-        const probe = window.innerHeight * 0.4;
-        const before = reader.pages[index].getBoundingClientRect();
-        const ratio = before.height ? (probe - before.top) / before.height : 0;
+        const anchor = readingAnchor(pageAtViewport());
         change();
-        const after = reader.pages[index].getBoundingClientRect();
-        window.scrollTo(0, window.scrollY + after.top + ratio * after.height - probe);
+        scrollToAnchor(anchor);
+    }
+
+    // strip pages are sized from the layout width, so rotating, resizing or fullscreen moves the content
+    // under scrollY; this puts the spot being read back on the reading line before a scroll can save
+    // the wrong page. Height-only changes (a mobile URL bar showing or hiding) are left alone
+    // unless `force` is set
+    function keepAnchorAfterResize(force = false) {
+        const width = document.documentElement.clientWidth;
+        const changed = width !== lastWidth;
+        lastWidth = width;
+        if (!(changed || force) || !reader.open || !reader.tracking || settings.mode !== 'strip') return;
+        if (!reader.anchor || !reader.pages[reader.anchor.index]) return;
+        scrollToAnchor(reader.anchor);
+        // a programmatic jump, not reading on: the toolbar stays as it is
+        reader.lastScrollY = window.scrollY;
     }
 
     function setCurrentPage(index) {
@@ -1054,6 +1132,48 @@ document.addEventListener('DOMContentLoaded', () => {
         if (reader.toastAction) hideToast();
         updatePageIndicator();
         scheduleSave();
+        keepScreenOn();
+    }
+
+    /* screen wake lock: the screen stays on while reading, until WAKE_LOCK_IDLE passes without
+       a page change or scrolling; the next one takes the lock again */
+
+    function keepScreenOn() {
+        if (!reader.open) return;
+        clearTimeout(reader.wakeTimer);
+        reader.wakeTimer = setTimeout(releaseWakeLock, WAKE_LOCK_IDLE);
+        requestWakeLock();
+    }
+
+    async function requestWakeLock() {
+        if (!('wakeLock' in navigator) || !reader.open || document.visibilityState !== 'visible') return;
+        if (reader.wakeLock || reader.wakeLockPending) return;
+        reader.wakeLockPending = true;
+        try {
+            const lock = await navigator.wakeLock.request('screen');
+            // closed or idle while the request was pending
+            if (!reader.open || !reader.wakeTimer) {
+                lock.release().catch(() => {});
+                return;
+            }
+            reader.wakeLock = lock;
+            // the browser lets go of it when the tab is hidden
+            lock.addEventListener('release', () => {
+                if (reader.wakeLock === lock) reader.wakeLock = null;
+            });
+        } catch (err) {
+            // refused (e.g. battery saver); the screen then follows the system timeout
+        } finally {
+            reader.wakeLockPending = false;
+        }
+    }
+
+    function releaseWakeLock() {
+        clearTimeout(reader.wakeTimer);
+        reader.wakeTimer = null;
+        const lock = reader.wakeLock;
+        reader.wakeLock = null;
+        if (lock) lock.release().catch(() => {});
     }
 
     function updatePageIndicator() {
@@ -1094,6 +1214,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function applyMode(mode, keepPosition = true) {
         const index = reader.current;
+        // recorded again by the next strip scroll
+        reader.anchor = null;
         if (mode === 'strip') destroyGallery();
 
         settings.mode = mode;
@@ -1268,9 +1390,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
     /* reader events */
 
-    readerCloseBtn.addEventListener('click', closeReader);
+    readerCloseBtn.addEventListener('click', requestClose);
     // the loading overlay covers the reader bar, so it has its own way out
-    if (loadingCancelBtn) loadingCancelBtn.addEventListener('click', closeReader);
+    if (loadingCancelBtn) loadingCancelBtn.addEventListener('click', requestClose);
+
+    // browser or phone Back while reading: closes the enlarged gallery page first, then the comic.
+    // After a reload while reading, the entry still says `reader`; openComic then reuses it
+    window.addEventListener('popstate', () => {
+        if (document.body.classList.contains('lg-on')) {
+            const galleryCloseBtn = document.querySelector('.lg-close');
+            if (galleryCloseBtn) galleryCloseBtn.click();
+            // that Back used up the reader's entry; the next one closes the comic
+            if (reader.open) pushReaderEntry();
+            return;
+        }
+        if (reader.open) closeReader();
+    });
     readerWidthBtn.addEventListener('click', () => cycleWidth(1));
     readerFullscreenBtn.addEventListener('click', toggleFullscreen);
     modeButtons.forEach((btn) => {
@@ -1298,11 +1433,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.addEventListener('fullscreenchange', () => {
         readerFullscreenBtn.classList.toggle('active', Boolean(document.fullscreenElement));
+        // the viewport may change only in height here, so the anchor is restored either way
+        requestAnimationFrame(() => keepAnchorAfterResize(true));
     });
 
-    // write the pending page before the tab is hidden or closed (registered before cloud-sync.js pushes)
+    // write the pending page before the tab is hidden or closed (registered before cloud-sync.js pushes);
+    // the screen lock is dropped by the browser while hidden and taken again on return
     document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'hidden') flushSave();
+        if (document.visibilityState === 'hidden') {
+            flushSave();
+        } else if (reader.open) {
+            keepScreenOn();
+        }
     });
     window.addEventListener('pagehide', flushSave);
 
@@ -1318,12 +1460,20 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.scrollRaf = requestAnimationFrame(onReaderScroll);
     }, { passive: true });
 
+    // once per frame
     window.addEventListener('resize', () => {
-        if (reader.open) updateProgress();
+        if (reader.resizeRaf) return;
+        reader.resizeRaf = requestAnimationFrame(() => {
+            reader.resizeRaf = 0;
+            keepAnchorAfterResize();
+            if (reader.open) updateProgress();
+        });
     });
 
     function onReaderScroll() {
         reader.scrollRaf = 0;
+        // the scroll a width change causes can arrive before the resize frame; put the old spot back first
+        if (document.documentElement.clientWidth !== lastWidth) keepAnchorAfterResize();
         const y = window.scrollY;
 
         if (settings.mode === 'strip') {
@@ -1335,9 +1485,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (delta > 0) hideBar(); else showBar();
                 reader.lastScrollY = y;
             }
-            if (reader.pages.length) setCurrentPage(pageAtViewport());
+            if (reader.pages.length) {
+                const index = pageAtViewport();
+                setCurrentPage(index);
+                if (reader.tracking) reader.anchor = readingAnchor(index);
+            }
         }
         updateProgress();
+        // scrolling within one tall page counts as reading too
+        keepScreenOn();
     }
 
     // reveal the toolbar when the pointer reaches the top edge
@@ -1379,7 +1535,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 toggleFullscreen();
                 break;
             case 'Escape':
-                if (!document.fullscreenElement) closeReader();
+                if (!document.fullscreenElement) requestClose();
                 break;
             default:
                 return;
