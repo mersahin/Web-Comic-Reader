@@ -20,7 +20,7 @@ Modern web-based comic book reader for CBR, CBZ, and CBT files with library mana
 - **Thumbnail Previews** - Auto-generated cover thumbnails for quick comic recognition
 - **Recently Read** - On the start screen: your last 20 comics with page, percentage and a progress bar; remove single entries or clear the list (progress is kept)
 - **Sync Across Devices** - Optional account (email + password) that keeps reading progress, Recently Read, reader settings and My channels in sync; each user sees only their own data
-- **Offline Copies** - Comics that open successfully (uploads and Telegram downloads) are kept in the browser (IndexedDB, up to 1 GB, oldest dropped first) so Recently Read reopens them in one click
+- **Offline Copies** - Comics that open successfully (uploads and Telegram downloads) are kept in the browser (IndexedDB, up to 1 GB, least recently read dropped first; a single file over 1 GB is not kept) so Recently Read reopens them in one click. Reopening a copy does not write it again, and when the browser runs out of space older copies make room for the new one
 - **Telegram Search** - Sign in once with your own Telegram API ID, type a title and read CBZ/CBR/CBT files from public channels right in the browser; an optional local helper adds `site:t.me` web search
 - **Quick Read Mode** - Upload and read individual files without library setup
 - **Client-Side Only** - All processing happens in your browser, no server uploads required
@@ -205,8 +205,9 @@ GitHub Pages serves over HTTPS, so Library Mode works on the live site.
 - Offline copies live in IndexedDB `ComicReaderDB` (store `files`); Telegram search settings in `localStorage` (key: `comic_reader_finder`); Telegram login in `comic_reader_tg` (API ID only), `sessionStorage` `comic_reader_tg_tab` and the encrypted `comic_reader_tg_vault`
 - Archive pages are filtered to images (`__MACOSX`, dotfiles, empty entries and metadata such as `ComicInfo.xml` are skipped) and sorted naturally (`page2` before `page10`)
 - A page that cannot be extracted or decoded shows a "Page could not be read" placeholder instead of stopping the comic; RAR/TAR pages that give no answer within 30 s count as unreadable
-- Folder handles are stored in `IndexedDB` (database: `ComicReaderDB`)
-- Thumbnails are base64-encoded JPEG stored in localStorage
+- Folder handles are stored in `IndexedDB` (database: `ComicReaderDB`). A tab still running an older version of the reader can block a database upgrade; offline copies and the restored library folder are then skipped with "Close other tabs of this reader and reload." in the console instead of hanging. Tabs with this version close their connection when a newer version upgrades the database
+- Thumbnails are base64-encoded JPEGs in the history entry in localStorage: 100 px wide and at most 150 px tall (tall pages such as webtoons are cropped from the top), made once per comic (older, taller ones are replaced on the next open)
+- localStorage is shared by every project on the same `<user>.github.io` address. When it is full, thumbnails of hidden entries and of entries outside the 20 shown in Recently Read are dropped and the save is retried once; if it still fails, "Browser storage is full; reading progress could not be saved." appears once per page load
 - Uses vanilla JavaScript (no jQuery required)
 
 ## Requirements

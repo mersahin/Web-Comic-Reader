@@ -48,9 +48,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const HISTORY_KEY = 'comic_reader_userpref';
     const SETTINGS_KEY = 'comic_reader_settings';
     const PROJECT_START_YEAR = 2026;
-    // recently opened comics are kept in IndexedDB (oldest dropped first) so "Recently Read" reopens them in one click
+    // recently opened comics are kept in IndexedDB (least recently read dropped first) so "Recently Read" reopens them in one click
     const FILE_CACHE_LIMIT = 1024 * 1024 * 1024;
     const RECENT_LIMIT = 20;
+    // cover thumbnails live in the shared localStorage quota, so they are kept small (tall pages are cropped)
+    const THUMB_WIDTH = 100;
+    const THUMB_MAX_HEIGHT = 150;
 
     const STRIP_WIDTHS = [
         { key: 'narrow', label: 'S', px: 640, name: 'Narrow' },
@@ -81,6 +84,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let dbPromise = null;
     // sorted file names of the last library folder scan
     let libraryFiles = [];
+    // the "storage is full" message is shown once per page load, not on every page turn
+    let storageFullNoticeShown = false;
 
     const settings = loadSettings();
     let lastSavedSettings = JSON.stringify(settings);
@@ -96,6 +101,8 @@ document.addEventListener('DOMContentLoaded', () => {
         source: 'upload',
         // the opened File, cached once it turns out to be a readable comic
         file: null,
+        // true when the File is the offline copy itself, so it is not written again
+        fromCache: false,
         pages: [],
         // { done, total } while pages are still being extracted
         loading: null,
@@ -685,6 +692,7 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.filename = file.name;
         reader.source = options.source || 'upload';
         reader.file = file;
+        reader.fromCache = Boolean(options.fromCache);
         document.dispatchEvent(new CustomEvent('comicreader:reader-opened', { detail: { filename: file.name } }));
         if (reopenNoticeEl) reopenNoticeEl.hidden = true;
 
@@ -734,8 +742,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error('No images found in this archive.');
             }
 
-            if (reader.file && reader.source !== 'folder') {
-                // library files can be reopened from the folder; everything else gets a local copy
+            if (reader.file && reader.source !== 'folder' && !reader.fromCache) {
+                // library files can be reopened from the folder; everything else gets a local copy.
+                // A comic opened from its offline copy is not written again: pruning orders copies by
+                // the reading history, so the copy needs no fresh lastOpened
                 cacheComicFile(reader.file, reader.source);
             }
 
@@ -902,6 +912,7 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.pages = [];
         reader.loading = null;
         reader.file = null;
+        reader.fromCache = false;
         reader.current = 0;
         reader.tracking = false;
         outputElement.innerHTML = '';
@@ -1434,42 +1445,121 @@ document.addEventListener('DOMContentLoaded', () => {
     // notify=false is used when the change came from sync (or changed nothing), so it is not sent back;
     // `names` lists the changed entries
     function writeHistory(history, notify = true, names = null) {
-        try {
-            localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-        } catch (e) {
-            console.error('Failed to save reading history:', e);
+        const err = storeHistory(history);
+        if (err) {
+            console.error('Failed to save reading history:', err);
+            if (isQuotaError(err)) showStorageFullNotice();
         }
         if (notify) document.dispatchEvent(new CustomEvent('comicreader:history-changed', { detail: { names } }));
     }
 
+    // returns null once stored, otherwise the error. When the quota is full, thumbnails that
+    // "Recently Read" does not show are dropped for good and the write is tried once more
+    function storeHistory(history) {
+        try {
+            localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+            return null;
+        } catch (e) {
+            const slim = isQuotaError(e) ? withoutOldThumbnails(history) : null;
+            if (!slim) return e;
+            try {
+                localStorage.setItem(HISTORY_KEY, JSON.stringify(slim));
+                return null;
+            } catch (retryError) {
+                return retryError;
+            }
+        }
+    }
+
+    // a copy without the thumbnails of hidden entries and of all but the RECENT_LIMIT most recent ones
+    // (the open comic keeps its own); null when there is nothing to drop
+    function withoutOldThumbnails(history) {
+        const keep = new Set(Object.entries(history)
+            .filter(([, data]) => data && !data.hidden_from_recent)
+            .sort((a, b) => (b[1].timestamp || 0) - (a[1].timestamp || 0))
+            .slice(0, RECENT_LIMIT)
+            .map(([name]) => name));
+        if (reader.open) keep.add(reader.filename);
+
+        let dropped = false;
+        const slim = {};
+        Object.entries(history).forEach(([name, data]) => {
+            if (data && data.thumbnail && !keep.has(name)) {
+                const rest = { ...data };
+                delete rest.thumbnail;
+                slim[name] = rest;
+                dropped = true;
+            } else {
+                slim[name] = data;
+            }
+        });
+        return dropped ? slim : null;
+    }
+
+    // localStorage and IndexedDB report a full quota under different names and codes per browser
+    function isQuotaError(err) {
+        return Boolean(err) && (err.name === 'QuotaExceededError'
+            || err.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+            || err.code === 22
+            || err.code === 1014);
+    }
+
+    function showStorageFullNotice() {
+        if (storageFullNoticeShown) return;
+        storageFullNoticeShown = true;
+        // deferred: the save that runs while a comic is closed or switched comes right before the toast is cleared
+        setTimeout(() => {
+            const text = 'Browser storage is full; reading progress could not be saved.';
+            // #reopenNotice is only visible in Quick Read, the toast on every view
+            if (!reader.open && currentView === 'quick') {
+                showQuickNotice(text, 'error');
+            } else {
+                showToast(text, false);
+            }
+        }, 0);
+    }
+
     function generateThumbnail(token) {
-        const img = reader.pages[0]?.firstChild;
-        if (!img || !img.src || reader.pages[0].classList.contains('page-error')) return;
+        const page = reader.pages[0];
+        const img = page?.firstChild;
+        if (!img || !img.src || page.classList.contains('page-error')) return;
 
         const run = () => {
-            if (token !== reader.token || !img.naturalWidth || reader.pages[0]?.classList.contains('page-error')) return;
+            if (token !== reader.token || !img.naturalWidth || page.classList.contains('page-error')) return;
             try {
+                // at most 100x150: a tall page (webtoon) is cropped from the top instead of squeezed
+                const srcHeight = Math.min(img.naturalHeight, img.naturalWidth * THUMB_MAX_HEIGHT / THUMB_WIDTH);
                 const canvas = document.createElement('canvas');
-                const ctx = canvas.getContext('2d');
-                const maxWidth = 100;
-                const scale = maxWidth / img.naturalWidth;
-                canvas.width = maxWidth;
-                canvas.height = Math.round(img.naturalHeight * scale);
-
-                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                const thumbnail = canvas.toDataURL('image/jpeg', 0.7);
-
-                setThumbnail(reader.filename, thumbnail);
+                canvas.width = THUMB_WIDTH;
+                canvas.height = Math.max(1, Math.round(srcHeight * THUMB_WIDTH / img.naturalWidth));
+                canvas.getContext('2d').drawImage(img, 0, 0, img.naturalWidth, srcHeight, 0, 0, canvas.width, canvas.height);
+                setThumbnail(reader.filename, canvas.toDataURL('image/jpeg', 0.7));
             } catch (e) {
                 console.error('Failed to create thumbnail:', e);
             }
         };
+        const create = () => {
+            if (img.complete && img.naturalWidth) {
+                run();
+            } else {
+                img.addEventListener('load', run, { once: true });
+            }
+        };
 
-        if (img.complete && img.naturalWidth) {
-            run();
-        } else {
-            img.addEventListener('load', run, { once: true });
+        const existing = readHistory()[reader.filename]?.thumbnail;
+        if (!existing) {
+            create();
+            return;
         }
+        // the stored thumbnail is kept; only one made before the height limit (or a broken one) is replaced
+        const stored = new Image();
+        stored.onload = () => {
+            if (stored.naturalHeight > THUMB_MAX_HEIGHT && token === reader.token) create();
+        };
+        stored.onerror = () => {
+            if (token === reader.token) create();
+        };
+        stored.src = existing;
     }
 
     /*
@@ -1513,7 +1603,9 @@ document.addEventListener('DOMContentLoaded', () => {
         readingHistory[filename] = existing
             ? { ...existing, thumbnail: dataUrl }
             : { last_page: 0, total_pages: null, source: null, timestamp: Date.now(), thumbnail: dataUrl };
-        writeHistory(readingHistory, false);
+        // a thumbnail that does not fit only loses itself (progress is untouched), so no "storage full" message
+        const err = storeHistory(readingHistory);
+        if (err) console.warn('Could not store the thumbnail:', err);
     }
 
     function progressInfo(data) {
@@ -1546,10 +1638,29 @@ document.addEventListener('DOMContentLoaded', () => {
     // IndexedDB: 'directories' holds the library folder handle, 'files' the offline copies of opened comics
     function openDB() {
         if (!dbPromise) {
-            dbPromise = new Promise((resolve, reject) => {
+            const opening = new Promise((resolve, reject) => {
+                let blocked = false;
                 const request = indexedDB.open('ComicReaderDB', 2);
                 request.onerror = () => reject(request.error);
-                request.onsuccess = () => resolve(request.result);
+                // a tab running an older version of the reader holds the database open and never lets go
+                request.onblocked = () => {
+                    blocked = true;
+                    reject(new Error('Close other tabs of this reader and reload.'));
+                };
+                request.onsuccess = () => {
+                    const db = request.result;
+                    // the caller already got the error; the next openDB() opens a fresh connection
+                    if (blocked) {
+                        db.close();
+                        return;
+                    }
+                    // a newer version opened in another tab: let it upgrade, the next openDB() reconnects
+                    db.onversionchange = () => {
+                        db.close();
+                        if (dbPromise === opening) dbPromise = null;
+                    };
+                    resolve(db);
+                };
                 request.onupgradeneeded = (event) => {
                     const db = event.target.result;
                     if (!db.objectStoreNames.contains('directories')) {
@@ -1560,7 +1671,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 };
             });
-            dbPromise.catch(() => { dbPromise = null; });
+            opening.catch(() => { if (dbPromise === opening) dbPromise = null; });
+            dbPromise = opening;
         }
         return dbPromise;
     }
@@ -1573,23 +1685,35 @@ document.addEventListener('DOMContentLoaded', () => {
             let result;
             if (request) request.onsuccess = () => { result = request.result; };
             tx.oncomplete = () => resolve(result);
-            tx.onerror = () => reject(tx.error);
+            // a failed request bubbles here before the transaction aborts, while tx.error is still null
+            tx.onerror = (event) => reject(event.target.error || tx.error);
             tx.onabort = () => reject(tx.error);
         });
     }
 
     async function cacheComicFile(file, source) {
+        // a copy bigger than the whole budget would only push every other copy out
+        if (file.size > FILE_CACHE_LIMIT) return;
+        const record = {
+            name: file.name,
+            blob: file,
+            size: file.size,
+            type: file.type,
+            source,
+            lastOpened: Date.now()
+        };
+        const put = () => fileStore('readwrite', (store) => store.put(record, file.name));
         try {
             if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-            await fileStore('readwrite', (store) => store.put({
-                name: file.name,
-                blob: file,
-                size: file.size,
-                type: file.type,
-                source,
-                lastOpened: Date.now()
-            }, file.name));
-            await pruneFileCache();
+            try {
+                await put();
+            } catch (err) {
+                // the browser's quota can be below FILE_CACHE_LIMIT (small phones): make room so this
+                // copy and the rest fit in half the budget, then try once more
+                if (!isQuotaError(err) || !(await pruneFileCache(FILE_CACHE_LIMIT / 2 - file.size, file.name))) throw err;
+                await put();
+            }
+            await pruneFileCache(FILE_CACHE_LIMIT, file.name);
         } catch (err) {
             console.warn('Could not keep an offline copy of this comic:', err);
         }
@@ -1614,17 +1738,25 @@ document.addEventListener('DOMContentLoaded', () => {
         }).catch((err) => console.warn('Could not delete offline copies:', err));
     }
 
-    async function pruneFileCache() {
+    // drops the least recently read copies until the total fits in `limit`; `keep` (the comic being
+    // cached) always stays. Returns how many copies were dropped
+    async function pruneFileCache(limit = FILE_CACHE_LIMIT, keep = null) {
         const records = await fileStore('readonly', (store) => store.getAll());
-        records.sort((a, b) => a.lastOpened - b.lastOpened);
+        // reopening a copy does not rewrite it, so the reading history gives the real last use
+        const history = readHistory();
+        const lastRead = (record) => history[record.name]?.timestamp ?? record.lastOpened ?? 0;
         let total = records.reduce((sum, record) => sum + (record.size || 0), 0);
+        const candidates = records
+            .filter((record) => record.name !== keep)
+            .sort((a, b) => lastRead(a) - lastRead(b));
         const drop = [];
-        while (total > FILE_CACHE_LIMIT && records.length > 1) {
-            const oldest = records.shift();
+        while (total > limit && candidates.length) {
+            const oldest = candidates.shift();
             total -= oldest.size || 0;
             drop.push(oldest.name);
         }
         await deleteCachedComics(drop);
+        return drop.length;
     }
 
     async function saveDirectoryHandle(dirHandle) {
@@ -1633,7 +1765,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const tx = db.transaction('directories', 'readwrite');
             const store = tx.objectStore('directories');
             store.put(dirHandle, 'comicsFolder');
-            await tx.complete;
+            await new Promise((resolve, reject) => {
+                tx.oncomplete = resolve;
+                tx.onerror = (event) => reject(event.target.error || tx.error);
+                tx.onabort = () => reject(tx.error);
+            });
         } catch (err) {
             console.error('Failed to save directory handle:', err);
         }
@@ -1712,7 +1848,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function openRecent(filename) {
         const cached = await getCachedComic(filename);
         if (cached) {
-            openComic(cached.file, { source: cached.source || 'upload' });
+            openComic(cached.file, { source: cached.source || 'upload', fromCache: true });
             return;
         }
         if (comicsDirectoryHandle) {
