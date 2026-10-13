@@ -1,10 +1,16 @@
+/* --brand fills backgrounds (white text on it); --link, --danger and --ok-text are for text and
+   keep at least 4.5:1 on --bg and --card in both schemes */
 :root {
+    color-scheme: light dark;
     --bg: #f7f8fb;
     --card: #fff;
     --border: #e5e7eb;
     --text: #111;
     --muted: #6b7280;
     --brand: #2563eb;
+    --link: #2563eb;
+    --danger: #b91c1c;
+    --ok-text: #166534;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -14,6 +20,9 @@
         --border: #1e232a;
         --text: #e5e7eb;
         --muted: #9ca3af;
+        --link: #60a5fa;
+        --danger: #ef4444;
+        --ok-text: #4ade80;
     }
 }
 
@@ -34,7 +43,16 @@ body {
     flex-direction: column;
     align-items: center;
     min-height: 100vh;
-    padding: 40px 0;
+    /* the visible height on mobile, where 100vh includes the hidden browser bars */
+    min-height: 100dvh;
+    /* viewport-fit=cover: keeps the panel clear of the notch in landscape */
+    padding: 40px env(safe-area-inset-right) 40px env(safe-area-inset-left);
+}
+
+/* focus targets, not controls: a view's h1 after the reader closes, the reader title when it opens */
+.wrap h1:focus,
+.rb-title:focus {
+    outline: none;
 }
 
 body:not(.reader-open) {
@@ -109,7 +127,8 @@ p {
 
 .btn-subtitle {
     font-size: 13px;
-    opacity: 0.8;
+    /* .92 keeps 4.5:1 on the blue primary button */
+    opacity: .92;
     font-weight: normal;
 }
 
@@ -162,7 +181,7 @@ p {
 .link-btn {
     background: none;
     border: none;
-    color: var(--brand);
+    color: var(--link);
     font-size: 14px;
     cursor: pointer;
     padding: 6px 12px;
@@ -256,18 +275,40 @@ p {
 .recent-comic-item {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 10px 12px;
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 8px;
-    cursor: pointer;
     transition: all .2s;
 }
 
 .recent-comic-item:hover {
     background: var(--border);
     transform: translateX(4px);
+}
+
+/* cover and text are one button that fills the row (the padding is its own, so the whole row
+   stays clickable); the remove button is a sibling next to it */
+.recent-comic-open {
+    flex: 1;
+    min-width: 0;
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+/* drawn inside the button: #allComicsList clips what sticks out sideways */
+.recent-comic-open:focus-visible {
+    outline: 2px solid var(--link);
+    outline-offset: -2px;
 }
 
 .recent-comic-icon {
@@ -318,6 +359,7 @@ p {
     flex-shrink: 0;
     width: 28px;
     height: 28px;
+    margin-right: 12px;
     padding: 6px;
     border: none;
     border-radius: 6px;
@@ -334,8 +376,9 @@ p {
     display: block;
 }
 
+/* also shown while the row's open button has the focus, so keyboard users see it is there */
 .recent-comic-item:hover .recent-remove-btn,
-.recent-remove-btn:focus-visible {
+.recent-comic-item:focus-within .recent-remove-btn {
     opacity: 1;
 }
 
@@ -344,9 +387,28 @@ p {
     color: #ef4444;
 }
 
+.recent-remove-btn:focus-visible {
+    outline: 2px solid var(--link);
+    outline-offset: 0;
+}
+
 @media (hover: none) {
     .recent-remove-btn {
         opacity: 1;
+    }
+}
+
+/* touch: larger targets for the small text buttons and the remove button (same 16px icon) */
+@media (pointer: coarse) {
+    .link-btn-small {
+        min-height: 36px;
+    }
+
+    .recent-remove-btn {
+        width: 40px;
+        height: 40px;
+        margin-right: 6px;
+        padding: 12px;
     }
 }
 
@@ -420,10 +482,6 @@ footer a {
 
 footer a:hover {
     color: var(--text);
-}
-
-.footer-credit {
-    opacity: .8;
 }
 
 .se-pre-con {
@@ -559,7 +617,8 @@ footer a:hover {
     }
 
     body {
-        padding: 20px 0;
+        padding-top: 20px;
+        padding-bottom: 20px;
     }
 }
 
@@ -604,6 +663,8 @@ body.reader-strip {
     max-width: var(--strip-width, 820px);
     margin: 0 auto;
     padding: 0;
+    /* full-width pages stay clear of the notch in landscape (body has no side padding while reading) */
+    padding-inline: env(safe-area-inset-left) env(safe-area-inset-right);
     border: 0;
     border-radius: 0;
     background: transparent;
@@ -709,6 +770,11 @@ body.reader-strip {
     margin-top: 40px;
     background: #16181c;
     border-radius: 12px;
+}
+
+/* grid mode shows it on the light or dark card */
+#output.mode-grid .reader-error {
+    color: var(--danger);
 }
 
 /* toolbar */
@@ -970,14 +1036,6 @@ body.reader-strip {
     }
 }
 
-/* phones and tablets: below 16px iOS zooms the page in when the field gets the focus */
-@media only screen and (max-width: 700px), (pointer: coarse) {
-    .page-jump-number,
-    .page-jump-go {
-        font-size: 16px;
-    }
-}
-
 /* ------------------------------------------------------------------
  * Reading progress in lists
  * ------------------------------------------------------------------ */
@@ -1020,7 +1078,7 @@ body.reader-strip {
 
 .notice[data-kind="error"] {
     border-color: rgba(239, 68, 68, .45);
-    color: #ef4444;
+    color: var(--danger);
 }
 
 /* ------------------------------------------------------------------
@@ -1125,7 +1183,7 @@ body.reader-strip {
 }
 
 .finder-card a {
-    color: var(--brand);
+    color: var(--link);
 }
 
 .finder-card pre {
@@ -1240,7 +1298,7 @@ body.reader-strip {
 }
 
 .finder-channel-title:hover {
-    color: var(--brand);
+    color: var(--link);
 }
 
 .finder-channel-sub {
@@ -1286,7 +1344,7 @@ body.reader-strip {
     justify-content: center;
     border-radius: 8px;
     background: rgba(37, 99, 235, .12);
-    color: var(--brand);
+    color: var(--link);
     font-size: 11px;
     font-weight: 700;
     letter-spacing: .04em;
@@ -1294,7 +1352,7 @@ body.reader-strip {
 
 .finder-file.is-cached .finder-ext {
     background: rgba(22, 163, 74, .14);
-    color: #16a34a;
+    color: var(--ok-text);
 }
 
 .finder-file-info {
@@ -1378,7 +1436,7 @@ body.reader-strip {
 }
 
 .finder-empty.error {
-    color: #ef4444;
+    color: var(--danger);
 }
 
 .finder-more {
@@ -1525,7 +1583,7 @@ body.reader-strip {
 
 .account-danger {
     margin-top: 18px;
-    color: #ef4444 !important;
+    color: var(--danger) !important;
 }
 
 .account-danger:hover {
@@ -1534,4 +1592,42 @@ body.reader-strip {
 
 #syncSignedIn .finder-submit {
     padding: 10px 18px;
+}
+
+/* ------------------------------------------------------------------
+ * Phones, tablets and reduced motion (last, so these win over the rules above)
+ * ------------------------------------------------------------------ */
+
+/* below 16px iOS zooms the page in when the field gets the focus */
+@media only screen and (max-width: 700px), (pointer: coarse) {
+    .page-jump input,
+    .page-jump-go,
+    .finder-search input,
+    .finder-card input,
+    .finder-card textarea,
+    .finder-form .finder-field input {
+        font-size: 16px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        transition-duration: .01ms !important;
+        scroll-behavior: auto !important;
+    }
+
+    .folder-btn-primary:hover,
+    .folder-btn-secondary:hover,
+    .recent-comic-item:hover,
+    #output.mode-grid .imgUrl:hover {
+        transform: none;
+    }
+
+    /* still turning, so loading is visible, but slowly */
+    .spinner,
+    .finder-spinner {
+        animation-duration: 2.4s;
+    }
 }

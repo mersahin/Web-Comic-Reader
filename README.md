@@ -26,6 +26,7 @@ Modern web-based comic book reader for CBR, CBZ, and CBT files with library mana
 - **Offline Copies** - Comics that open successfully (uploads and Telegram downloads) are kept in the browser (IndexedDB, up to 1 GB, least recently read dropped first; a single file over 1 GB is not kept) so Recently Read reopens them in one click. Reopening a copy does not write it again, and when the browser runs out of space older copies make room for the new one
 - **Telegram Search** - Sign in once with your own Telegram API ID, type a title and read CBZ/CBR/CBT files from public channels right in the browser; an optional local helper adds `site:t.me` web search
 - **Quick Read Mode** - Upload and read individual files without library setup
+- **Keyboard, Screen Reader and Phone Friendly** - Every comic in All Comics and Recently Read is a button you can reach with `Tab`, and closing a comic puts the focus back on its row. Follows the system's dark mode (also for scrollbars, form controls and the browser bar colour) and its reduce-motion setting (no smooth scrolling, slide or hover animations). On phones the layout stays clear of the notch in landscape, form fields do not zoom the page on iOS, and small buttons get larger touch targets
 - **Client-Side Only** - All processing happens in your browser, no server uploads required
 - **Offline Support** - Works completely offline after initial load
 
@@ -121,6 +122,12 @@ Free Supabase projects are paused after a week without database activity. [`.git
 | `[` / `]` | Previous / next comic in the library folder (comics opened from the folder) |
 | `Esc` | Close the go-to-page panel when it is open, otherwise close the comic (also while it is still loading) |
 | Browser or phone **Back** | Close the comic and stay on the site (in grid view an enlarged page is closed first) |
+
+Moving around with `Tab`:
+- On the start screen and in the library, `Tab` reaches each comic row; `Enter` opens it. In Recently Read the **×** next to a row is its own stop and removes the comic from the list.
+- Opening a comic puts the focus on its title in the toolbar, so `Space` keeps scrolling. `Shift+Tab` goes to Close, `Tab` to the other toolbar buttons; a hidden toolbar slides back in when the focus reaches it.
+- In scroll mode `Tab` skips the pages and goes on to the end of the comic. In grid mode every thumbnail is a stop.
+- Closing a comic puts the focus back where it was opened: on its row in the list, on the Quick Read box, or on the search field in Telegram search.
 
 ## Getting Started (Development)
 

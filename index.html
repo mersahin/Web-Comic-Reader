@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f7f8fb" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0b0c0e" media="(prefers-color-scheme: dark)" />
     <title>Web Comic Reader</title>
     <link href="./assets/css/styles.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/lightgallery.js@1.4.0/dist/css/lightgallery.min.css" integrity="sha384-rO6BmpffXWJbXr5o6FujBfLsa59bwoc3/GK23rhJyZ4ecL5GUuTH0RS4dtZO1vLb" crossorigin="anonymous" rel="stylesheet">
@@ -10,13 +12,13 @@
 <body>
     <div class="se-pre-con">
         <div class="spinner"></div>
-        <div class="progress-text">Reading 0/0 pages</div>
+        <div class="progress-text" role="status">Reading 0/0 pages</div>
         <button type="button" id="loadingCancelBtn" class="link-btn">Cancel</button>
     </div>
 
     <div class="wrap">
         <div id="initialView">
-            <h1>Your Comic Library</h1>
+            <h1 tabindex="-1">Your Comic Library</h1>
             <p>Choose how you want to read your comics</p>
 
             <div id="browserNotice" style="display:none; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; font-size: 14px; color: var(--muted); text-align: left;">
@@ -57,7 +59,7 @@
         <div id="libraryView" style="display:none;">
             <div class="library-header">
                 <div class="library-header-left">
-                    <h1>Your Comic Library</h1>
+                    <h1 tabindex="-1">Your Comic Library</h1>
                     <div id="currentFolderName" class="current-folder"></div>
                 </div>
                 <div class="library-header-actions">
@@ -77,7 +79,7 @@
 
         <div id="quickReadView" style="display:none;">
             <div class="library-header">
-                <h1>Quick Read</h1>
+                <h1 tabindex="-1">Quick Read</h1>
                 <button id="backToLibraryBtn" class="link-btn" style="display:none;">Back to library</button>
             </div>
             <div id="dropzone" class="dropzone">
@@ -93,7 +95,7 @@
         <div id="searchView" style="display:none;">
             <div class="library-header">
                 <div class="library-header-left">
-                    <h1>Search Telegram</h1>
+                    <h1 tabindex="-1">Search Telegram</h1>
                     <div id="finderStatus" class="current-folder finder-status" data-state="unknown">Checking connection…</div>
                 </div>
                 <div class="library-header-actions">
@@ -195,7 +197,7 @@
         <div id="accountView" style="display:none;">
             <div class="library-header">
                 <div class="library-header-left">
-                    <h1>Sync account</h1>
+                    <h1 tabindex="-1">Sync account</h1>
                     <div id="syncStatus" class="current-folder"></div>
                 </div>
                 <div class="library-header-actions">
@@ -277,7 +279,7 @@
         <button id="readerCloseBtn" class="rb-btn" aria-label="Close comic" title="Close (Esc)">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"/></svg>
         </button>
-        <div id="readerTitle" class="rb-title"></div>
+        <div id="readerTitle" class="rb-title" tabindex="-1"></div>
         <button type="button" id="readerPage" class="rb-page" aria-haspopup="dialog" aria-expanded="false" aria-controls="pageJump" title="Go to page (G)">0 / 0</button>
         <div class="rb-group" role="group" aria-label="View mode">
             <button id="modeStripBtn" class="rb-btn" data-mode="strip" title="Continuous scroll (M)" aria-label="Continuous scroll view">

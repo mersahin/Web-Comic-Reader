@@ -101,6 +101,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let pendingRemoteMode = null;
     // layout width the strip pages were last sized for (see keepAnchorAfterResize)
     let lastWidth = document.documentElement.clientWidth;
+    // smooth scrolling is skipped when the system asks for less motion
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
     // reader state; `token` invalidates async work of a previously opened comic
     const reader = {
@@ -133,7 +135,9 @@ document.addEventListener('DOMContentLoaded', () => {
         jumpRequest: 0,
         wakeLock: null,
         wakeLockPending: false,
-        wakeTimer: null
+        wakeTimer: null,
+        // where the focus goes back to when the reader closes (see focusOrigin)
+        returnFocus: null
     };
 
     // small API used by telegram-finder.js and cloud-sync.js. Assigned before any setup code runs
@@ -324,10 +328,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (clearRecentBtn) {
         clearRecentBtn.addEventListener('click', async () => {
             if (!confirm('Clear the Recently Read list?\nYour reading progress is kept.')) return;
+            const hadFocus = document.activeElement === clearRecentBtn;
             // fetch other devices' progress first, so the hidden flags go out on top of it
             await window.CloudSync?.pullNow?.();
             hideFromRecent(null);
             await loadRecentComics();
+            // the emptied list is hidden together with this button
+            if (hadFocus && !isFocusable(clearRecentBtn)) visibleHeading()?.focus();
         });
     }
 
@@ -574,16 +581,23 @@ document.addEventListener('DOMContentLoaded', () => {
         for (const filename of libraryFiles) {
             const data = readingHistory[filename];
             const progress = data ? progressInfo(data) : null;
-            const item = createComicItem(filename, data, progress?.label, progress?.ratio);
-            item.addEventListener('click', () => openComicFromFolder(filename));
+            const item = createComicItem(filename, data, progress?.label, progress?.ratio, () => openComicFromFolder(filename));
             allComicsListEl.appendChild(item);
         }
     }
 
-    // builds a list row; `meta` is optional secondary text, `ratio` (0..1) adds a progress bar
-    function createComicItem(filename, data, meta, ratio = null) {
+    // builds a list row; `meta` is optional secondary text, `ratio` (0..1) adds a progress bar.
+    // Cover and text form one button that calls `onOpen`; other row buttons are appended next to it
+    function createComicItem(filename, data, meta, ratio = null, onOpen = null) {
         const item = document.createElement('div');
         item.className = 'recent-comic-item';
+        item.dataset.filename = filename;
+
+        const openBtn = document.createElement('button');
+        openBtn.type = 'button';
+        openBtn.className = 'recent-comic-open';
+        openBtn.setAttribute('aria-label', meta ? `Open ${filename}, ${meta}` : `Open ${filename}`);
+        if (onOpen) openBtn.addEventListener('click', onOpen);
 
         const icon = document.createElement('div');
         icon.className = 'recent-comic-icon';
@@ -615,6 +629,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const bar = document.createElement('div');
             bar.className = 'comic-progress';
             bar.setAttribute('role', 'progressbar');
+            bar.setAttribute('aria-label', 'Reading progress');
             bar.setAttribute('aria-valuemin', '0');
             bar.setAttribute('aria-valuemax', '100');
             bar.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
@@ -625,7 +640,8 @@ document.addEventListener('DOMContentLoaded', () => {
             info.appendChild(bar);
         }
 
-        item.append(icon, info);
+        openBtn.append(icon, info);
+        item.appendChild(openBtn);
         return item;
     }
 
@@ -704,6 +720,8 @@ document.addEventListener('DOMContentLoaded', () => {
      * ------------------------------------------------------------------ */
 
     function openComic(file, options = {}) {
+        // a comic opened from inside the reader (next issue) keeps the panel's focus origin
+        if (!reader.open) reader.returnFocus = focusOrigin();
         resetReaderContent();
         const token = reader.token;
 
@@ -726,6 +744,9 @@ document.addEventListener('DOMContentLoaded', () => {
         readerTitleEl.title = file.name;
         applyMode(settings.mode, false);
         showBar();
+        // the panel holding the focus is hidden now. The title takes it rather than the Close button,
+        // so Space keeps scrolling the comic; Shift+Tab reaches Close, Tab the rest of the toolbar
+        readerTitleEl.focus({ preventScroll: true });
         updatePageIndicator();
         updateProgress();
         window.scrollTo(0, 0);
@@ -784,6 +805,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const a = document.createElement('a');
                 a.className = 'comic-page';
                 a.dataset.index = String(i);
+                a.tabIndex = pageTabIndex(settings.mode);
 
                 const img = document.createElement('img');
                 img.className = 'imgUrl';
@@ -1022,6 +1044,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function closeReader() {
         if (!reader.open) return;
+        const closedName = reader.filename;
+        const origin = reader.returnFocus;
+        reader.returnFocus = null;
         resetReaderContent();
         releaseWakeLock();
         reader.open = false;
@@ -1045,7 +1070,48 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         await showPanel();
+        // not when another comic was opened while the panel was being rebuilt
+        if (!reader.open) restoreFocus(closedName, origin);
         document.dispatchEvent(new CustomEvent('comicreader:reader-closed'));
+    }
+
+    // what had the focus when a comic was opened from the panel. The lists are rebuilt while reading,
+    // so a list row is remembered by its list and found again by file name; other controls by reference
+    function focusOrigin() {
+        const active = document.activeElement;
+        if (!active || active === document.body || !active.closest) return null;
+        const row = active.closest('.recent-comic-item');
+        if (row) return { listId: row.parentElement ? row.parentElement.id : '' };
+        return { element: active };
+    }
+
+    // after the reader closed: the row of the comic just read (in the list it was opened from), else the
+    // control that opened it, else the heading of the visible view
+    function restoreFocus(filename, origin) {
+        let target = null;
+        if (origin && 'listId' in origin) {
+            const list = origin.listId ? document.getElementById(origin.listId) : null;
+            target = findRowButton(list, filename) || findRowButton(document, filename);
+        } else if (origin) {
+            target = origin.element;
+        }
+        if (!isFocusable(target)) target = visibleHeading();
+        if (target) target.focus();
+    }
+
+    function findRowButton(root, filename) {
+        if (!root || !filename) return null;
+        const row = [...root.querySelectorAll('.recent-comic-item')].find((el) => el.dataset.filename === filename);
+        return row ? row.querySelector('.recent-comic-open') : null;
+    }
+
+    // the views' h1s have tabindex=-1, so they can hold the focus when nothing better is left
+    function visibleHeading() {
+        return [...document.querySelectorAll('.wrap h1')].find(isFocusable) || null;
+    }
+
+    function isFocusable(el) {
+        return Boolean(el) && el.isConnected && !el.disabled && el.getClientRects().length > 0;
     }
 
     async function restorePosition(token) {
@@ -1062,7 +1128,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 markLastRead(lastPage);
                 setTimeout(() => {
                     if (token === reader.token) {
-                        reader.pages[lastPage].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        reader.pages[lastPage].scrollIntoView({ behavior: reduceMotion.matches ? 'auto' : 'smooth', block: 'center' });
                     }
                 }, 200);
             }
@@ -1276,6 +1342,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         outputElement.classList.toggle('mode-strip', mode === 'strip');
         outputElement.classList.toggle('mode-grid', mode === 'grid');
+        reader.pages.forEach((page) => { page.tabIndex = pageTabIndex(mode); });
         document.body.classList.toggle('reader-strip', reader.open && mode === 'strip');
         document.body.classList.toggle('reader-grid', reader.open && mode === 'grid');
         modeButtons.forEach((btn) => {
@@ -1298,6 +1365,12 @@ document.addEventListener('DOMContentLoaded', () => {
             updatePageIndicator();
         }
         updateProgress();
+    }
+
+    // grid thumbnails are tab stops (each opens the gallery); strip pages are not, so Tab goes from the
+    // toolbar straight to the end of the comic instead of through every page
+    function pageTabIndex(mode) {
+        return mode === 'strip' ? -1 : 0;
     }
 
     function toggleMode() {
@@ -1527,6 +1600,8 @@ document.addEventListener('DOMContentLoaded', () => {
     /* reader events */
 
     readerCloseBtn.addEventListener('click', requestClose);
+    // Tab into the auto-hidden toolbar slides it back in, so the focused button is never off-screen
+    readerBarEl.addEventListener('focusin', showBar);
     // the loading overlay covers the reader bar, so it has its own way out
     if (loadingCancelBtn) loadingCancelBtn.addEventListener('click', requestClose);
 
@@ -1584,7 +1659,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             markLastRead(0);
             setCurrentPage(0);
-            window.scrollTo({ top: 0, behavior: 'smooth' });
+            window.scrollTo({ top: 0, behavior: reduceMotion.matches ? 'auto' : 'smooth' });
         }
         showBar();
     });
@@ -2155,23 +2230,30 @@ document.addEventListener('DOMContentLoaded', () => {
                     filename,
                     data,
                     `${progress.label} • ${formatTimestamp(data.timestamp)}`,
-                    progress.ratio
+                    progress.ratio,
+                    () => openRecent(filename)
                 );
 
                 const removeBtn = document.createElement('button');
+                removeBtn.type = 'button';
                 removeBtn.className = 'recent-remove-btn';
                 removeBtn.title = 'Remove from Recently Read';
                 removeBtn.setAttribute('aria-label', `Remove ${filename} from Recently Read`);
                 removeBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
-                removeBtn.addEventListener('click', async (event) => {
-                    event.stopPropagation();
+                removeBtn.addEventListener('click', async () => {
+                    // the list is rebuilt without this row; the focus moves to the row taking its place
+                    const hadFocus = item.contains(document.activeElement);
+                    const index = [...recentComicsListEl.children].indexOf(item);
                     await window.CloudSync?.pullNow?.();
                     hideFromRecent(filename);
                     await loadRecentComics();
+                    if (!hadFocus) return;
+                    const rows = recentComicsListEl.querySelectorAll('.recent-comic-open');
+                    const next = rows[Math.min(index, rows.length - 1)];
+                    (isFocusable(next) ? next : visibleHeading())?.focus();
                 });
                 item.appendChild(removeBtn);
 
-                item.addEventListener('click', () => openRecent(filename));
                 recentComicsListEl.appendChild(item);
             }
 
