@@ -37,7 +37,7 @@ Modern web-based comic book reader for CBR, CBZ, and CBT files with library mana
 
 ### Quick Read Mode
 1. Click "Quick Read"
-2. Upload a single CBR/CBZ/CBT file
+2. Click the box (or Tab to it and press Enter) to pick a CBR/CBZ/CBT file, or drop one onto it. One comic opens at a time: if you drop several, the first comic is opened and the rest are ignored; other file types are refused with a notice
 3. Read immediately (progress is remembered per file name in this browser)
 
 ### Telegram Search
@@ -248,7 +248,6 @@ GitHub Pages serves over HTTPS, so Library Mode works on the live site.
 
 - [Uncompress.js](https://github.com/workhorsy/uncompress.js) - Archive extraction
 - [lightGallery](https://github.com/sachinchoolur/lightGallery) - Image gallery and viewer
-- [Dropzone.js](https://www.dropzone.dev/) - File upload handling
 
 ## License
 

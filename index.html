@@ -6,7 +6,6 @@
     <title>Web Comic Reader</title>
     <link href="./assets/css/styles.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/lightgallery.js@1.4.0/dist/css/lightgallery.min.css" integrity="sha384-rO6BmpffXWJbXr5o6FujBfLsa59bwoc3/GK23rhJyZ4ecL5GUuTH0RS4dtZO1vLb" crossorigin="anonymous" rel="stylesheet">
-    <link href="https://unpkg.com/dropzone@6.3.5/dist/dropzone.css" integrity="sha384-asD8pW//1IYJd67ZZn/Eyo31U/YtixrhsNyn90jnZTEIgTpYfE2mkwGYVWHwg2vD" crossorigin="anonymous" rel="stylesheet" />
 </head>
 <body>
     <div class="se-pre-con">
@@ -81,12 +80,13 @@
                 <h1>Quick Read</h1>
                 <button id="backToLibraryBtn" class="link-btn" style="display:none;">Back to library</button>
             </div>
-            <form id="dropzone" class="dropzone">
-                <div class="dz-message">
-                    Click to select, or drop files here
-                    <div class="hint">(cbr, cbz, cbt only) • Progress is saved in this browser</div>
-                </div>
-            </form>
+            <div id="dropzone" class="dropzone">
+                <input id="quickReadInput" type="file" accept=".cbr,.cbz,.cbt" class="visually-hidden">
+                <label for="quickReadInput" class="dz-message">
+                    Click to select, or drop a file here
+                    <span class="hint">(cbr, cbz, cbt only) • Progress is saved in this browser</span>
+                </label>
+            </div>
             <div id="reopenNotice" class="notice" hidden></div>
         </div>
 
@@ -307,7 +307,6 @@
     <script src="https://cdn.jsdelivr.net/npm/lg-thumbnail.js@1.2.0/dist/lg-thumbnail.min.js" integrity="sha384-eDIfO9Qaiqt6+yQovjM/IHqz/wSnYMVuTQ3k4sRcubwy8FTUGkutcmHeyRfIXEJQ" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/lg-autoplay.js@1.2.0/dist/lg-autoplay.min.js" integrity="sha384-+gywzx1abKq0PFr152RMIB/TbciIhXxjIcTmWYurRGGVZUJTqES7r95LykgdcK1m" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/lg-rotate.js@1.2.0/dist/lg-rotate.min.js" integrity="sha384-ifaR0VSakiDkIbitjxKbO/q1Gl4QyBXy1/FbjEwA6a2/YoQDQAw0dim24rX8wzAR" crossorigin="anonymous"></script>
-    <script src="https://unpkg.com/dropzone@6.3.5/dist/dropzone-min.js" integrity="sha384-wHTterC8uaPhGVKg8kmSlqcmI8CCFkOI+Mn51O3udobTBX0vQLs6a18vJqh0AnW3" crossorigin="anonymous"></script>
     <script src="./assets/js/script.js"></script>
     <script src="./assets/js/telegram-finder.js"></script>
     <script src="./assets/js/sync-config.js"></script>

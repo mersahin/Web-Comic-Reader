@@ -350,29 +350,52 @@ p {
     }
 }
 
+/* hidden from view but still focusable and announced (unlike display:none) */
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
 #dropzone {
-    border: 2px dashed var(--border) !important;
+    position: relative;
+    border: 2px dashed var(--border);
     border-radius: 14px;
-    padding: 36px 20px;
-    background: transparent !important;
+    background: transparent;
     transition: .2s;
-    display: flex !important;
-    align-items: center;
-    justify-content: center;
+    display: flex;
     min-height: 180px;
 }
 
 #dropzone.dz-drag-hover {
-    border-color: var(--brand) !important;
-    background: rgba(37,99,235,.06) !important;
+    border-color: var(--brand);
+    background: rgba(37,99,235,.06);
 }
 
+/* the file input is the focused element; the outline goes on the whole box */
+.dropzone:focus-within {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+}
+
+/* the label fills the box, so a click anywhere in it opens the file picker */
 .dz-message {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 36px 20px;
     font-size: 16px;
-    margin: 0 !important;
-    display: block !important;
     color: var(--text);
     text-align: center;
+    cursor: pointer;
 }
 
 .hint {
@@ -522,14 +545,6 @@ footer a:hover {
         box-shadow: 0 0 0 3px var(--brand),
                     0 8px 24px rgba(37,99,235,.5);
     }
-}
-
-.dropzone .dz-preview {
-    display: none !important;
-}
-
-.dz-progress {
-    display: none;
 }
 
 @media only screen and (max-width: 768px) {

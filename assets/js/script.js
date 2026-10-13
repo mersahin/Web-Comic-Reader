@@ -24,6 +24,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const librarySearchBtn = document.getElementById('librarySearchBtn');
     const searchBackBtn = document.getElementById('searchBackBtn');
     const reopenNoticeEl = document.getElementById('reopenNotice');
+    const dropzoneEl = document.getElementById('dropzone');
+    const quickReadInputEl = document.getElementById('quickReadInput');
     const browserNoticeEl = document.getElementById('browserNotice');
     const changeFolderBtn = document.getElementById('changeFolderBtn');
     const currentFolderNameEl = document.getElementById('currentFolderName');
@@ -57,6 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
         { key: 'full', label: 'Full', px: null, name: 'Full width' }
     ];
 
+    const COMIC_FILE_PATTERN = /\.(cbr|cbz|cbt)$/i;
     const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'avif']);
     const pageNameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
     // rar/tar pages that never call back are given up after this long
@@ -105,6 +108,58 @@ document.addEventListener('DOMContentLoaded', () => {
         toastTimer: null,
         toastAction: null,
         scrollRaf: 0
+    };
+
+    // small API used by telegram-finder.js and cloud-sync.js. Assigned before any setup code runs
+    // (the functions are hoisted), so a later failure in this handler cannot take the API away.
+    window.ComicReader = {
+        openFile(file, source = 'telegram') {
+            openComic(file, { source });
+        },
+        async hasOfflineCopy(name) {
+            try {
+                return (await fileStore('readonly', (store) => store.getKey(name))) !== undefined;
+            } catch (err) {
+                return false;
+            }
+        },
+        openRecent,
+
+        // used by cloud-sync.js
+        showAccount: showAccountView,
+        getHistory: readHistory,
+        applyRemoteHistory,
+        replaceHistory: (history) => applyRemoteHistory(history, Object.keys(history)),
+        getReaderSettings() {
+            return { mode: pendingRemoteMode || settings.mode, width: settings.width };
+        },
+        applyReaderSettings(remote) {
+            if (!remote) return;
+            const width = STRIP_WIDTHS.some((w) => w.key === remote.width) ? remote.width : settings.width;
+            const mode = remote.mode === 'grid' || remote.mode === 'strip' ? remote.mode : settings.mode;
+            if (mode === settings.mode) pendingRemoteMode = null;
+            if (width === settings.width && mode === settings.mode) return;
+            applyingRemoteSettings = true;
+            try {
+                if (reader.open) {
+                    // never switch the mode under an open comic; the width keeps the page in place
+                    if (width !== settings.width) {
+                        preservePosition(() => {
+                            settings.width = width;
+                            saveSettings();
+                            applyWidth();
+                        });
+                    }
+                    if (mode !== settings.mode) pendingRemoteMode = mode;
+                } else {
+                    settings.width = width;
+                    settings.mode = mode;
+                    saveSettings();
+                }
+            } finally {
+                applyingRemoteSettings = false;
+            }
+        }
     };
 
     // current year
@@ -548,24 +603,75 @@ document.addEventListener('DOMContentLoaded', () => {
         return item;
     }
 
-    // Dropzone configuration
-    if (window.Dropzone) Dropzone.autoDiscover = false;
-    let dropzone = new Dropzone("#dropzone", {
-        url: '#',
-        acceptedFiles: '.cbr,.cbz,.cbt',
-        createImageThumbnails: false,
-        autoProcessQueue: false,
-        previewsContainer: false,
-        maxFiles: 1,
-        maxfilesexceeded: function(file) {
-            this.removeAllFiles();
-        },
-        init: function () {
-            this.on('addedfile', function (file) {
-                openComic(file);
-            });
-        }
+    /* Quick Read: native file input plus drag and drop on the same box */
+
+    if (quickReadInputEl) {
+        quickReadInputEl.addEventListener('change', () => {
+            const file = quickReadInputEl.files[0];
+            // reset so picking the same file again fires 'change' again
+            quickReadInputEl.value = '';
+            if (file) openQuickFile(file);
+        });
+    }
+
+    if (dropzoneEl) {
+        const onDragOver = (event) => {
+            if (!hasDraggedFiles(event)) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'copy';
+            dropzoneEl.classList.add('dz-drag-hover');
+        };
+        dropzoneEl.addEventListener('dragenter', onDragOver);
+        dropzoneEl.addEventListener('dragover', onDragOver);
+        dropzoneEl.addEventListener('dragleave', (event) => {
+            // moving between the box and its label also fires dragleave
+            if (!dropzoneEl.contains(event.relatedTarget)) dropzoneEl.classList.remove('dz-drag-hover');
+        });
+        dropzoneEl.addEventListener('drop', (event) => {
+            event.preventDefault();
+            dropzoneEl.classList.remove('dz-drag-hover');
+            const files = [...(event.dataTransfer?.files || [])];
+            const file = files.find((f) => COMIC_FILE_PATTERN.test(f.name));
+            if (!file) {
+                showQuickNotice('Only .cbr, .cbz and .cbt files can be opened.', 'error');
+                return;
+            }
+            openQuickFile(file);
+            if (files.length > 1) {
+                const others = files.length - 1;
+                // shown when the reader is closed again
+                showQuickNotice(`Opened "${file.name}". ${others} other ${others === 1 ? 'file was' : 'files were'} ignored: Quick Read opens one comic at a time.`);
+            }
+        });
+    }
+
+    // a file dropped next to the box would make the browser leave the page to show it;
+    // dropEffect 'none' shows the no-drop cursor there instead
+    ['dragover', 'drop'].forEach((type) => {
+        document.addEventListener(type, (event) => {
+            if (currentView !== 'quick' || reader.open || !hasDraggedFiles(event)) return;
+            if (dropzoneEl && dropzoneEl.contains(event.target)) return;
+            event.preventDefault();
+            if (type === 'dragover') event.dataTransfer.dropEffect = 'none';
+        });
     });
+
+    // only `types` is readable while dragging; the file list itself arrives with 'drop'
+    function hasDraggedFiles(event) {
+        return Boolean(event.dataTransfer) && Array.prototype.includes.call(event.dataTransfer.types || [], 'Files');
+    }
+
+    function openQuickFile(file) {
+        openComic(file);
+    }
+
+    // `kind` 'error' uses the red notice style
+    function showQuickNotice(text, kind = '') {
+        if (!reopenNoticeEl) return;
+        reopenNoticeEl.textContent = text;
+        if (kind) reopenNoticeEl.dataset.kind = kind; else delete reopenNoticeEl.dataset.kind;
+        reopenNoticeEl.hidden = false;
+    }
 
     /* ------------------------------------------------------------------
      * Reader
@@ -1619,8 +1725,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function showReopenNotice(filename) {
         showQuickReadMode();
         const page = (readHistory()[filename]?.last_page || 0) + 1;
-        reopenNoticeEl.textContent = `"${filename}" is not stored in this browser any more. Select the file again and reading continues at page ${page}.`;
-        reopenNoticeEl.hidden = false;
+        showQuickNotice(`"${filename}" is not stored in this browser any more. Select the file again and reading continues at page ${page}.`);
     }
 
     async function openComicFromFolder(filename) {
@@ -1689,55 +1794,4 @@ document.addEventListener('DOMContentLoaded', () => {
         if (minutes > 0) return `${minutes}m ago`;
         return 'Just now';
     }
-
-    // small API used by telegram-finder.js
-    window.ComicReader = {
-        openFile(file, source = 'telegram') {
-            openComic(file, { source });
-        },
-        async hasOfflineCopy(name) {
-            try {
-                return (await fileStore('readonly', (store) => store.getKey(name))) !== undefined;
-            } catch (err) {
-                return false;
-            }
-        },
-        openRecent,
-
-        // used by cloud-sync.js
-        showAccount: showAccountView,
-        getHistory: readHistory,
-        applyRemoteHistory,
-        replaceHistory: (history) => applyRemoteHistory(history, Object.keys(history)),
-        getReaderSettings() {
-            return { mode: pendingRemoteMode || settings.mode, width: settings.width };
-        },
-        applyReaderSettings(remote) {
-            if (!remote) return;
-            const width = STRIP_WIDTHS.some((w) => w.key === remote.width) ? remote.width : settings.width;
-            const mode = remote.mode === 'grid' || remote.mode === 'strip' ? remote.mode : settings.mode;
-            if (mode === settings.mode) pendingRemoteMode = null;
-            if (width === settings.width && mode === settings.mode) return;
-            applyingRemoteSettings = true;
-            try {
-                if (reader.open) {
-                    // never switch the mode under an open comic; the width keeps the page in place
-                    if (width !== settings.width) {
-                        preservePosition(() => {
-                            settings.width = width;
-                            saveSettings();
-                            applyWidth();
-                        });
-                    }
-                    if (mode !== settings.mode) pendingRemoteMode = mode;
-                } else {
-                    settings.width = width;
-                    settings.mode = mode;
-                    saveSettings();
-                }
-            } finally {
-                applyingRemoteSettings = false;
-            }
-        }
-    };
 });
