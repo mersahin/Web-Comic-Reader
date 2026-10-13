@@ -84,9 +84,10 @@ Click **Sign in** in the bar at the bottom of the panel, create an account with 
 What is synced: reading progress and Recently Read (file name, page, page count, last read), reader view settings, and the My channels list. Comic files, thumbnails and Telegram logins stay on each device.
 
 Sync is automatic, there is nothing to press:
-- It checks for changes from other devices on sign-in, about every 30 to 60 seconds while the page is visible, when the tab or window gets focus again, when a comic is opened or closed, and when the network comes back.
+- It checks for changes from other devices on sign-in, about every 30 to 60 seconds while the page is visible, when the tab or window gets focus again, when a comic is opened (before it resumes, waiting at most 3 seconds) or closed, and when the network comes back.
 - Changes made on this device are sent within a few seconds (at least every 10 seconds while reading), and right away when the tab is hidden or closed.
-- For each comic the newest change wins. Once the SQL block at the end of `supabase/schema.sql` has been run, the server also keeps the newer row when a device with older data sends it, and only changed rows are fetched.
+- For each comic the newest change wins. A change always counts as newer than the version it was made on, so a device clock that runs ahead or behind cannot make it lose. Opening a comic is not a change: it resumes at the newest page from any device and never sends an older one.
+- Before the SQL block at the end of `supabase/schema.sql` has been run, the app looks up the server copy of a comic before it sends a change (the newer one wins; an older change that is still unsent when the tab closes goes out on the next visit), and fetches all rows about once a minute. Once it has been run, the server keeps the newer row when a device with older data sends it (that device then takes the server copy), and only changed rows are fetched.
 - If the same comic is open on another device, the reader never jumps; it offers **Go to page N** instead. View settings from another device apply when the comic is closed.
 - The bar turns amber while offline or retrying and red after repeated failures. **Sync now** forces a full check.
 - A comic whose file name the server cannot store (longer than 512 characters, or with invalid characters) stays on this device only and never blocks the rest of the sync.
@@ -214,7 +215,7 @@ GitHub Pages serves over HTTPS, so Library Mode works on the live site.
 ### Development Notes
 - Reading progress is stored in `localStorage` (key: `comic_reader_userpref`)
 - Reader settings (view mode, page width) are stored in `localStorage` (key: `comic_reader_settings`)
-- Reading history entries hold `last_page`, `total_pages`, `source`, `timestamp`, `thumbnail` and `hidden_from_recent`; all access goes through `readHistory`/`writeHistory`/`saveLastPageRead`, the seam for a future synced store
+- Reading history entries hold `last_page`, `total_pages`, `source`, `timestamp`, `updated_at` (last change, for the sync merge; 1 ms after 1970 for a comic only opened on this device, so any other device's copy wins), `thumbnail` and `hidden_from_recent`; all access goes through `readHistory`/`writeHistory`/`saveLastPageRead`, the seam for a future synced store
 - Offline copies live in IndexedDB `ComicReaderDB` (store `files`); Telegram search settings in `localStorage` (key: `comic_reader_finder`); Telegram login in `comic_reader_tg` (API ID only), `sessionStorage` `comic_reader_tg_tab` and the encrypted `comic_reader_tg_vault`
 - Archive pages are filtered to images (`__MACOSX`, dotfiles, empty entries and metadata such as `ComicInfo.xml` are skipped) and sorted naturally (`page2` before `page10`)
 - A page that cannot be extracted or decoded shows a "Page could not be read" placeholder instead of stopping the comic; RAR/TAR pages that give no answer within 30 s count as unreadable

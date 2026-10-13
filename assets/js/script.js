@@ -72,6 +72,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const pageNameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
     // rar/tar pages that never call back are given up after this long
     const PAGE_READ_TIMEOUT = 30000;
+    // updated_at of a history entry that was never changed here (1 ms after 1970): it is synced,
+    // but any copy from another device is newer
+    const NEVER_CHANGED = 1;
     // the keep-the-screen-on lock is let go after this long without turning a page or scrolling
     const WAKE_LOCK_IDLE = 10 * 60 * 1000;
     // shown (and opened in the gallery) in place of a page that could not be extracted
@@ -760,6 +763,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // every failure (unreadable file, not an archive, no pages) ends in the reader error
     async function loadArchive(file, token) {
+        // other devices' newest progress is merged before the resume page is chosen
+        // (gives up after a few seconds; at once when signed out or offline)
+        const caughtUp = Promise.resolve(window.CloudSync?.pullNow?.()).catch(() => {});
         let archive;
         try {
             const buffer = await file.arrayBuffer();
@@ -767,6 +773,11 @@ document.addEventListener('DOMContentLoaded', () => {
             archive = archiveOpenArrayBuffer(file.name, buffer);
         } catch (err) {
             if (token === reader.token) showReaderError(err);
+            return;
+        }
+        await caughtUp;
+        if (token !== reader.token) {
+            archiveClose(archive);
             return;
         }
         try {
@@ -871,8 +882,12 @@ document.addEventListener('DOMContentLoaded', () => {
         sePreConElement.style.display = 'none';
         generateThumbnail(token);
         restorePosition(token).then(() => {
-            // records the page count so "Recently Read" can show a percentage right away
-            if (token === reader.token) saveLastPageRead(reader.filename, reader.current);
+            if (token !== reader.token) return;
+            // records the page count so "Recently Read" can show a percentage right away;
+            // the restored page is not a new change, so it never outranks another device's progress
+            saveLastPageRead(reader.filename, reader.current, { restore: true });
+            // a sync pull that landed while the position was restored: offer its page
+            offerRemotePage(readHistory()[reader.filename]);
         }).catch((err) => console.warn('Could not restore the reading position:', err));
     }
 
@@ -1980,18 +1995,35 @@ document.addEventListener('DOMContentLoaded', () => {
      * timestamp = last read (list order), updated_at = last change (sync merge).
      * Kept behind readHistory/writeHistory/saveLastPageRead so a synced store can replace it later.
      */
-    function saveLastPageRead(filename, pageIndex) {
+    // `restore`: the save right after the reader restored the position. That is not a change: the
+    // stored page stays (a sync pull may have moved it meanwhile) and so does updated_at, so opening
+    // a comic never outranks newer progress from another device
+    function saveLastPageRead(filename, pageIndex, { restore = false } = {}) {
         const readingHistory = readHistory();
-        const existing = readingHistory[filename] || {};
+        const known = readingHistory[filename];
+        const existing = known || {};
         const isOpen = reader.open && filename === reader.filename;
         const newTotal = (isOpen && reader.pages.length) ? reader.pages.length : null;
         const source = isOpen ? reader.source : (existing.source || null);
-        // only a real change gets a new updated_at, so reopening a comic never outdates newer progress
-        const changed = !existing.updated_at
-            || existing.last_page !== pageIndex
-            || Boolean(existing.hidden_from_recent)
-            || Boolean(newTotal && existing.total_pages !== newTotal);
+        const totalChanged = Boolean(newTotal && existing.total_pages !== newTotal);
+        const hidden = Boolean(existing.hidden_from_recent);
         const now = Date.now();
+        // entries from before updated_at existed use their last read time
+        const previous = existing.updated_at || existing.timestamp || 0;
+        if (restore && known) pageIndex = existing.last_page || 0;
+
+        let changed;
+        let updatedAt;
+        if (restore && !hidden) {
+            updatedAt = previous || NEVER_CHANGED;
+            // a comic opened here for the first time is sent too, with the oldest possible updated_at
+            changed = updatedAt === NEVER_CHANGED && (!known || totalChanged);
+        } else {
+            // only a real change gets a new updated_at; it always sorts after the version it was
+            // made on (the newest one merged from the server), whatever the device clocks say
+            changed = !existing.updated_at || existing.last_page !== pageIndex || hidden || totalChanged;
+            updatedAt = changed ? Math.max(now, previous + 1) : existing.updated_at;
+        }
 
         // reading a comic again brings it back into "Recently Read" (no hidden flag)
         const entry = {
@@ -2000,7 +2032,7 @@ document.addEventListener('DOMContentLoaded', () => {
             total_pages: newTotal || existing.total_pages || null,
             source,
             timestamp: now,
-            updated_at: changed ? now : existing.updated_at,
+            updated_at: updatedAt,
             thumbnail: existing.thumbnail || null
         };
         delete entry.hidden_from_recent;
@@ -2014,7 +2046,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const existing = readingHistory[filename];
         readingHistory[filename] = existing
             ? { ...existing, thumbnail: dataUrl }
-            : { last_page: 0, total_pages: null, source: null, timestamp: Date.now(), thumbnail: dataUrl };
+            : { last_page: 0, total_pages: null, source: null, timestamp: Date.now(), updated_at: NEVER_CHANGED, thumbnail: dataUrl };
         // a thumbnail that does not fit only loses itself (progress is untouched), so no "storage full" message
         const err = storeHistory(readingHistory);
         if (err) console.warn('Could not store the thumbnail:', err);
@@ -2039,8 +2071,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const names = filename === null ? Object.keys(readingHistory) : [filename];
         const changed = names.filter((name) => readingHistory[name] && !readingHistory[name].hidden_from_recent);
         changed.forEach((name) => {
-            readingHistory[name].hidden_from_recent = true;
-            readingHistory[name].updated_at = Date.now();
+            const entry = readingHistory[name];
+            entry.hidden_from_recent = true;
+            // after the version it was made on, like a page change (see saveLastPageRead)
+            entry.updated_at = Math.max(Date.now(), (entry.updated_at || entry.timestamp || 0) + 1);
         });
         if (changed.length) writeHistory(readingHistory, true, changed);
         // the list entry is gone, so its offline copy is no longer needed
@@ -2329,8 +2363,12 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         // the lists are re-rendered when the reader closes; never move the open comic
-        const remote = history[reader.filename];
-        if (!reader.tracking || !remote || !changedNames.includes(reader.filename)) return;
+        if (changedNames.includes(reader.filename)) offerRemotePage(history[reader.filename]);
+    }
+
+    // the open comic's stored page differs from the one shown (it came from another device): offer it
+    function offerRemotePage(remote) {
+        if (!reader.open || !reader.tracking || !remote || !reader.pages.length) return;
         const page = Math.max(0, Math.min(remote.last_page | 0, reader.pages.length - 1));
         if (page === reader.current) return;
         showToast(`Read to page ${page + 1} on another device`, {

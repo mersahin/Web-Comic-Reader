@@ -7,8 +7,10 @@
  * returns. Local changes are remembered in `pending` and pushed within seconds.
  *
  * Merge rule: the server copy wins unless this device has an unsent change
- * that is newer (per comic, and for the settings as a whole). Comic files and
- * Telegram logins never leave the device.
+ * that is newer (per comic, and for the settings as a whole). A change made
+ * here is always stamped after the version it was made on, so device clocks
+ * that run ahead or behind cannot make it lose. Comic files and Telegram
+ * logins never leave the device.
  *
  * The auth session lives in sessionStorage unless "Stay signed in" is ticked,
  * because every project on the same <user>.github.io origin shares localStorage.
@@ -24,14 +26,14 @@ document.addEventListener('DOMContentLoaded', () => {
      *   settingsChangedAt, settingsSeenAt (remote updated_at last applied),
      *   pending: { file_name: updated_at ms }, settingsPending,
      *   cursor, settingsCursor (newest server_updated_at seen, server clock),
-     *   caps: { serverClock, checkedAt }, lastFullAt, probeToken }
+     *   caps: { serverClock, checkedAt }, lastFullAt }
      */
     const STATE_KEY = 'comic_sync_state';
     const PERSIST_KEY = 'comic_sync_persist'; // '1' = keep the session in localStorage
     const PUSH_DELAY = 1500;                  // library: wait for changes to settle
     const READING_PUSH_WAIT = 10 * 1000;      // reader open: push at most this late
     const TICK = 30 * 1000;                   // incremental pull (and status refresh)
-    const PROBE_EVERY = 60 * 1000;            // change probe when the server clock is missing
+    const FULL_PULL_EVERY = 60 * 1000;        // timer pulls when the server clock is missing (full pulls)
     const FULL_EVERY = 15 * 60 * 1000;
     const CAPS_TTL = 24 * 60 * 60 * 1000;
     const CURSOR_OVERLAP = 10 * 1000;         // transactions can commit out of order with now()
@@ -41,6 +43,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const PENDING_STALE = 15 * 1000;          // longer than one reading push interval
     const BACKOFF = [15, 30, 60, 120, 300].map((s) => s * 1000);
     const UPSERT_CHUNK = 200;
+    const LOOKUP_CHUNK = 100;                 // file names per .in() lookup
+    const LOOKUP_URL_MAX = 6000;              // and at most this many URL characters
     const PROGRESS_COLS = 'file_name,last_page,total_pages,source,hidden,read_at,updated_at';
     const SETTINGS_COLS = 'reader,channels,updated_at';
     // Postgres refuses the row itself: check constraint, NUL or bad text, value too long
@@ -583,13 +587,14 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
-    // local-only fields (thumbnail and anything else) stay as they are on this device
+    // local-only fields (thumbnail and anything else) stay as they are on this device. Opening a comic
+    // is not synced as a change, so the page count and the newer last read time found here are kept
     function entryFromRow(row, local) {
         const entry = Object.assign({}, local, {
             last_page: row.last_page || 0,
-            total_pages: row.total_pages || null,
+            total_pages: row.total_pages || (local && local.total_pages) || null,
             source: row.source || null,
-            timestamp: Date.parse(row.read_at) || Date.now(),
+            timestamp: Math.max(Date.parse(row.read_at) || 0, (local && local.timestamp) || 0) || Date.now(),
             updated_at: Date.parse(row.updated_at) || Date.now(),
             thumbnail: (local && local.thumbnail) || null
         });
@@ -607,27 +612,43 @@ document.addEventListener('DOMContentLoaded', () => {
             || (a.source || null) !== (b.source || null);
     }
 
-    // returns the names the database refused; one such row never blocks the others
+    /*
+     * refused: names the database cannot store; one such row never blocks the others.
+     * skipped: names it did not store because it keeps a newer copy (sync_stamp_row in
+     * schema.sql answers without an error and leaves them out of the returned rows).
+     */
     async function upsertProgress(db, uid, rows) {
-        const upsert = (list) => db.from('reading_progress').upsert(list, { onConflict: 'user_id,file_name' });
+        const upsert = (list) => db.from('reading_progress').upsert(list, { onConflict: 'user_id,file_name' }).select('file_name');
         const refused = [];
+        const skipped = [];
+        const noteSkipped = (list, data) => {
+            if (!Array.isArray(data)) return;
+            const stored = new Set(data.map((row) => row && row.file_name));
+            list.forEach((row) => { if (!stored.has(row.file_name)) skipped.push(row.file_name); });
+        };
         for (let i = 0; i < rows.length; i += UPSERT_CHUNK) {
             const chunk = rows.slice(i, i + UPSERT_CHUNK);
             checkUser(uid);
-            const { error } = await upsert(chunk);
-            if (!error) continue;
+            const { data, error } = await upsert(chunk);
+            if (!error) {
+                noteSkipped(chunk, data);
+                continue;
+            }
             if (!isRowError(error)) throw error;
             // find the refused rows one by one and send the rest
             for (const row of chunk) {
                 checkUser(uid);
                 const single = await upsert([row]);
-                if (!single.error) continue;
+                if (!single.error) {
+                    noteSkipped([row], single.data);
+                    continue;
+                }
                 if (!isRowError(single.error)) throw single.error;
                 skipName(row.file_name, single.error.message);
                 refused.push(row.file_name);
             }
         }
-        return refused;
+        return { refused, skipped };
     }
 
     function localSettings() {
@@ -637,16 +658,18 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
+    // false when the server kept newer settings instead (no row comes back, see upsertProgress)
     async function pushSettings(db, uid, changedAt) {
         const { reader, channels } = localSettings();
         checkUser(uid);
-        const { error } = await db.from('user_settings').upsert({
+        const { data, error } = await db.from('user_settings').upsert({
             user_id: uid,
             reader,
             channels,
             updated_at: toIso(changedAt)
-        }, { onConflict: 'user_id' });
+        }, { onConflict: 'user_id' }).select('updated_at');
         if (error) throw error;
+        return !(Array.isArray(data) && data.length === 0);
     }
 
     /* change tracking: works while signed out too, the next sync sends it */
@@ -696,16 +719,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     /* pull */
 
-    // count, newest updated_at and settings time; used when there is no server clock
-    async function probeRemote(db) {
-        const progress = await db.from('reading_progress').select('updated_at', { count: 'exact' }).order('updated_at', { ascending: false }).limit(1);
-        if (progress.error) throw progress.error;
-        const prefs = await db.from('user_settings').select('updated_at').maybeSingle();
-        if (prefs.error) throw prefs.error;
-        const newest = progress.data && progress.data[0] ? progress.data[0].updated_at : '';
-        return `${progress.count || 0}|${newest}|${prefs.data ? prefs.data.updated_at : ''}`;
-    }
-
     // `since` = the state with cursors for an incremental pull, null for a full one
     async function fetchRemote(db, useClock, since) {
         const progressSince = since && since.cursor ? new Date(parseTime(since.cursor) - CURSOR_OVERLAP).toISOString() : null;
@@ -728,19 +741,54 @@ document.addEventListener('DOMContentLoaded', () => {
         return { rows, settingsRow: prefs.data, settingsComplete: !settingsSince };
     }
 
+    // groups of names for .in() lookups, small enough for the request URL
+    function lookupChunks(names) {
+        const chunks = [];
+        let chunk = [];
+        let size = 0;
+        names.forEach((name) => {
+            const length = encodeURIComponent(name).length + 3;
+            if (chunk.length && (chunk.length >= LOOKUP_CHUNK || size + length > LOOKUP_URL_MAX)) {
+                chunks.push(chunk);
+                chunk = [];
+                size = 0;
+            }
+            chunk.push(name);
+            size += length;
+        });
+        if (chunk.length) chunks.push(chunk);
+        return chunks;
+    }
+
+    // the server rows of these names, and the settings row when `withSettings`
+    async function fetchNamed(db, names, withSettings) {
+        // a quote or backslash does not survive the .in() list syntax: those fetch everything instead
+        if (names.some((name) => /["\\]/.test(name)) || names.length > 20 * LOOKUP_CHUNK) {
+            const all = await fetchRemote(db, false, null);
+            return withSettings ? all : { rows: all.rows, settingsRow: null, settingsComplete: false };
+        }
+        const rows = [];
+        for (const chunk of lookupChunks(names)) {
+            const { data, error } = await db.from('reading_progress').select(PROGRESS_COLS).in('file_name', chunk);
+            if (error) throw error;
+            rows.push(...(data || []));
+        }
+        let settingsRow = null;
+        if (withSettings) {
+            const prefs = await db.from('user_settings').select(SETTINGS_COLS).maybeSingle();
+            if (prefs.error) throw prefs.error;
+            settingsRow = prefs.data;
+        }
+        return { rows, settingsRow, settingsComplete: Boolean(withSettings) };
+    }
+
     async function pullAndMerge(db, uid, opts) {
         const state = loadState();
         const newHere = state.userId !== uid || !state.lastSyncAt;
         const capsFresh = Boolean(state.caps) && Date.now() - (state.caps.checkedAt || 0) < CAPS_TTL;
         let useClock = Boolean(opts.manual) || !capsFresh || Boolean(state.caps.serverClock);
+        // without the server clock every pull is a full one: nothing cheaper sees every change
         let full = Boolean(opts.full) || newHere || !useClock || !state.cursor || Date.now() - (state.lastFullAt || 0) > FULL_EVERY;
-        let probeToken = null;
-
-        if (!useClock) {
-            probeToken = await probeRemote(db);
-            const due = opts.full || newHere || Date.now() - (state.lastFullAt || 0) > FULL_EVERY;
-            if (!due && probeToken === state.probeToken) return;
-        }
 
         let remote;
         try {
@@ -750,14 +798,25 @@ document.addEventListener('DOMContentLoaded', () => {
             saveState({ caps: { serverClock: false, checkedAt: Date.now() }, cursor: null, settingsCursor: null });
             useClock = false;
             full = true;
-            probeToken = await probeRemote(db);
             remote = await fetchRemote(db, false, null);
         }
         if (useClock && !(capsFresh && state.caps.serverClock)) {
             saveState({ caps: { serverClock: true, checkedAt: Date.now() } });
         }
         checkUser(uid);
+        mergeRemote(uid, remote, { full, useClock, pull: true });
+        return full;
+    }
 
+    /*
+     * Merges server rows into this device's data. opts.full: `remote` holds every row, so local
+     * entries missing there are known. opts.pull: a pull (cursors and lastFullAt move on).
+     * opts.adopt: { name: pending mark } the server refused because it keeps a newer copy, and
+     * opts.adoptSettings the same for the settings: the server copy is taken unless the change
+     * here was replaced by a newer one meanwhile.
+     */
+    function mergeRemote(uid, remote, opts = {}) {
+        const adopt = opts.adopt || {};
         // from here to saveState: synchronous, so no local change can slip in between
         const st = loadState();
         // data on this device that was synced for another account is replaced, never merged in
@@ -774,7 +833,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const mine = foreignLocal ? null : local[name];
             // an unsent change here wins only when it is newer than the server copy
             const unsent = Boolean(mine) && (name in pending || firstSync);
-            if (unsent && localUpdated(mine) > parseTime(row.updated_at)) {
+            const refused = name in adopt && pending[name] === adopt[name];
+            if (unsent && !refused && localUpdated(mine) > parseTime(row.updated_at)) {
                 if (!(name in pending)) pending[name] = localUpdated(mine);
                 continue;
             }
@@ -782,7 +842,7 @@ document.addEventListener('DOMContentLoaded', () => {
             delete pending[name];
         }
 
-        if (full && !foreignLocal) {
+        if (opts.full && !foreignLocal) {
             // entries this device has that the server does not
             for (const [name, entry] of Object.entries(local)) {
                 if (remoteNames.has(name) || !entry) continue;
@@ -805,10 +865,11 @@ document.addEventListener('DOMContentLoaded', () => {
         let settingsPending = foreignLocal ? false : Boolean(st.settingsPending);
         let settingsChangedAt = foreignLocal ? 0 : (st.settingsChangedAt || 0);
         let settingsSeenAt = foreignLocal ? 0 : (st.settingsSeenAt || 0);
-        if (row && remoteChangedAt > settingsSeenAt && !(settingsPending && settingsChangedAt > remoteChangedAt)) {
+        const settingsRefused = opts.adoptSettings !== undefined && settingsPending && settingsChangedAt === opts.adoptSettings;
+        if (row && (settingsRefused || (remoteChangedAt > settingsSeenAt && !(settingsPending && settingsChangedAt > remoteChangedAt)))) {
             app().applyReaderSettings(row.reader || {});
             if (finder()) finder().setChannels(row.channels || []);
-            settingsSeenAt = remoteChangedAt;
+            settingsSeenAt = Math.max(settingsSeenAt, remoteChangedAt);
             settingsPending = false;
         } else if (!row && remote.settingsComplete) {
             if (foreignLocal) {
@@ -822,48 +883,82 @@ document.addEventListener('DOMContentLoaded', () => {
             // otherwise deleted on the server ("Delete my synced data"): kept here, sent only after a new change
         }
 
-        saveState({
-            userId: uid,
-            pending,
-            settingsPending,
-            settingsChangedAt,
-            settingsSeenAt,
-            cursor: useClock ? maxServerTime(full ? null : st.cursor, remote.rows) : null,
-            settingsCursor: useClock ? maxServerTime(remote.settingsComplete ? null : st.settingsCursor, row ? [row] : []) : null,
-            lastFullAt: full ? Date.now() : st.lastFullAt || 0,
-            probeToken: useClock ? null : probeToken
-        });
+        const patch = { userId: uid, pending, settingsPending, settingsChangedAt, settingsSeenAt };
+        if (opts.pull) {
+            const full = Boolean(opts.full);
+            Object.assign(patch, {
+                cursor: opts.useClock ? maxServerTime(full ? null : st.cursor, remote.rows) : null,
+                settingsCursor: opts.useClock ? maxServerTime(remote.settingsComplete ? null : st.settingsCursor, row ? [row] : []) : null,
+                lastFullAt: full ? Date.now() : st.lastFullAt || 0,
+                probeToken: undefined // no longer used
+            });
+        }
+        saveState(patch);
     }
 
     /* push: only what changed here and has not been confirmed by the server */
 
-    async function pushPending(db, uid) {
-        const state = loadState();
+    // without the server clock nothing on the server keeps a newer row from being overwritten, so
+    // the server copies of the pending names are merged first (`checked`: this cycle just did a full pull)
+    function needsLookup(state, checked) {
+        if (checked || (state.caps && state.caps.serverClock)) return false;
+        if (!flushing) return true;
+        // closing the tab leaves no time for a lookup: changes made since the last good sync go straight out
+        const since = state.lastSyncAt || 0;
+        const marks = Object.values(state.pending || {});
+        if (state.settingsPending) marks.push(state.settingsChangedAt || 0);
+        return failures > 0 || marks.some((mark) => mark <= since);
+    }
+
+    async function pushPending(db, uid, { checked = false } = {}) {
+        let state = loadState();
         if (state.userId !== uid) return; // the first merge for this account has not run yet
+        // e.g. a Telegram file name longer than 512 characters: stays on this device
+        const invalid = Object.keys(state.pending || {}).filter((name) => !validName(name));
+        invalid.forEach((name) => skipName(name, 'the file name cannot be stored on the server'));
+        dropPending(invalid);
+        state = loadState();
+        if (!hasPending(state)) return;
+
+        if (needsLookup(state, checked)) {
+            const remote = await fetchNamed(db, Object.keys(state.pending || {}), Boolean(state.settingsPending));
+            checkUser(uid);
+            mergeRemote(uid, remote);
+            state = loadState();
+        }
+
         const history = app().getHistory();
         const sent = Object.assign({}, state.pending);
-        // e.g. a Telegram file name longer than 512 characters: stays on this device
-        const invalid = Object.keys(sent).filter((name) => !validName(name));
-        invalid.forEach((name) => {
-            skipName(name, 'the file name cannot be stored on the server');
-            delete sent[name];
-        });
-        dropPending(invalid);
         const rows = Object.keys(sent)
             .filter((name) => history[name])
             .map((name) => rowFromEntry(uid, name, history[name]));
-        const refused = rows.length ? await upsertProgress(db, uid, rows) : [];
+        const { refused, skipped } = rows.length ? await upsertProgress(db, uid, rows) : { refused: [], skipped: [] };
+        if (skipped.length) {
+            // not saved: the server has a newer copy, which this device takes now
+            const adopt = {};
+            skipped.forEach((name) => { adopt[name] = sent[name]; delete sent[name]; });
+            const remote = await fetchNamed(db, skipped, false);
+            checkUser(uid);
+            mergeRemote(uid, remote, { adopt });
+        }
         if (Object.keys(sent).length) clearPending(sent);
         dropPending(refused);
         if (state.settingsPending) {
+            const changedAt = state.settingsChangedAt || 0;
+            let stored = true;
             try {
-                await pushSettings(db, uid, state.settingsChangedAt);
+                stored = await pushSettings(db, uid, changedAt);
             } catch (err) {
                 if (!isRowError(err)) throw err;
                 // refused settings must not block the sync; the next settings change tries again
                 console.warn('Sync skips the settings the server refused:', err.message);
             }
-            if ((loadState().settingsChangedAt || 0) === (state.settingsChangedAt || 0)) {
+            if (!stored) {
+                const remote = await fetchNamed(db, [], true);
+                checkUser(uid);
+                mergeRemote(uid, remote, { adoptSettings: changedAt });
+            }
+            if ((loadState().settingsChangedAt || 0) === changedAt) {
                 saveState({ settingsPending: false });
             }
         }
@@ -873,14 +968,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // minimum gap between automatic pulls per reason
     const PULL_GAP = {
-        pull: 5000,
+        pull: 1000, // pullNow: before opening a comic, Clear or Remove
         visible: 5000,
         focus: 5000,
         pageshow: 5000,
         online: 5000,
         interval: 5000,
-        'reader-closed': 5000,
-        'reader-opened': 3000
+        'reader-closed': 5000
     };
     // automatic reasons do nothing while the page is hidden (the flush on hide is separate)
     const AUTOMATIC = new Set([...Object.keys(PULL_GAP), 'push', 'retry']);
@@ -939,8 +1033,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (showSyncing) render();
         try {
             const db = await getClient();
-            if (opts.pull || newHere) await pullAndMerge(db, uid, opts);
-            await pushPending(db, uid);
+            const checked = opts.pull || newHere ? await pullAndMerge(db, uid, opts) : false;
+            await pushPending(db, uid, { checked });
             checkUser(uid);
             failures = 0;
             lastError = '';
@@ -962,6 +1056,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // the retry keeps the pull option; without the server clock pushPending looks up the server copies first
     function scheduleRetry(opts) {
         clearTimeout(retryTimer);
         const delay = BACKOFF[Math.min(failures, BACKOFF.length) - 1];
@@ -1005,8 +1100,9 @@ document.addEventListener('DOMContentLoaded', () => {
         render();
         if (isOffline()) return;
         const state = loadState();
-        // with the server clock an incremental pull is cheap; otherwise probe once a minute
-        if (!(state.caps && state.caps.serverClock) && Date.now() - lastPullAt < PROBE_EVERY - 1000) return;
+        // with the server clock an incremental pull is cheap; otherwise a full pull every other tick
+        // (at most FULL_PULL_EVERY after the last pull of any kind)
+        if (!(state.caps && state.caps.serverClock) && Date.now() - lastPullAt < FULL_PULL_EVERY - TICK / 2) return;
         requestSync('interval', { pull: true });
     }
 
@@ -1037,15 +1133,17 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     ['comicreader:settings-changed', 'comicreader:channels-changed'].forEach((name) => {
         document.addEventListener(name, () => {
-            saveState({ settingsPending: true, settingsChangedAt: Date.now() });
+            // after the settings version it was made on, whatever the device clocks say
+            const state = loadState();
+            const changedAt = Math.max(Date.now(), (state.settingsSeenAt || 0) + 1, (state.settingsChangedAt || 0) + 1);
+            saveState({ settingsPending: true, settingsChangedAt: changedAt });
             schedulePush();
         });
     });
 
+    // the reader itself waits for pullNow before it restores the last page
     document.addEventListener('comicreader:reader-opened', () => {
         readerOpen = true;
-        // usually lands before the reader restores the last page
-        requestSync('reader-opened', { pull: true });
     });
     document.addEventListener('comicreader:reader-closed', () => {
         readerOpen = false;
@@ -1090,7 +1188,8 @@ document.addEventListener('DOMContentLoaded', () => {
             render();
         },
         sync: () => requestSync('manual', { full: true, manual: true }),
-        // a quick catch-up before a local change that should land on top of other devices' progress
+        // a quick catch-up before opening a comic or a local change that should land on top of
+        // other devices' progress; resolves at once when signed out, offline or hidden
         pullNow: () => Promise.race([requestSync('pull', { pull: true }), wait(3000)])
     };
 
