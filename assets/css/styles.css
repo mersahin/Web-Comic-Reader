@@ -450,6 +450,23 @@ footer a:hover {
     text-shadow: 0 2px 4px rgba(0,0,0,.3);
 }
 
+.se-pre-con .link-btn {
+    margin-top: 20px;
+    padding: 8px 22px;
+    border: 1px solid rgba(255,255,255,.35);
+    color: #fff;
+    font-size: 15px;
+}
+
+.se-pre-con .link-btn:hover {
+    background: rgba(255,255,255,.14);
+}
+
+.se-pre-con .link-btn:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+}
+
 #output {
     width: 80%;
     max-width: 1200px;
@@ -607,10 +624,13 @@ body.reader-strip {
     background: #1a1c20;
 }
 
+/* page that could not be extracted: its src is the "Page could not be read" SVG */
 #output.mode-strip .page-error .imgUrl,
 #output.mode-grid .page-error .imgUrl {
     aspect-ratio: 2 / 3;
-    background: repeating-linear-gradient(45deg, #2a1215, #2a1215 10px, #1f0d10 10px, #1f0d10 20px);
+    object-fit: contain;
+    background: #1a1c20;
+    background-clip: content-box;
 }
 
 .strip-end {

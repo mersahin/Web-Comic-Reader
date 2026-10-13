@@ -14,12 +14,13 @@ Modern web-based comic book reader for CBR, CBZ, and CBT files with library mana
 - **Adjustable Page Width** - Narrow, medium, wide or full width in scroll mode
 - **Auto-hiding Toolbar** - Page counter, progress bar, view switch and fullscreen; hides while you read down
 - **Resume Reading** - Jumps back to the exact page you left, with a one-click "Start over"
+- **Fast Opening** - The comic shows as soon as the pages up to your saved page are extracted; the rest loads in the background (percentage next to the page counter). **Cancel** on the loading screen (or `Esc`) closes it
 - **Library Mode** - Select your comics folder once, access anytime with persistent folder access
 - **Reading Progress** - Automatically saves your last read page and scrolls to it when you reopen
 - **Thumbnail Previews** - Auto-generated cover thumbnails for quick comic recognition
 - **Recently Read** - On the start screen: your last 20 comics with page, percentage and a progress bar; remove single entries or clear the list (progress is kept)
 - **Sync Across Devices** - Optional account (email + password) that keeps reading progress, Recently Read, reader settings and My channels in sync; each user sees only their own data
-- **Offline Copies** - Comics you open (uploads and Telegram downloads) are kept in the browser (IndexedDB, up to 1 GB, oldest dropped first) so Recently Read reopens them in one click
+- **Offline Copies** - Comics that open successfully (uploads and Telegram downloads) are kept in the browser (IndexedDB, up to 1 GB, oldest dropped first) so Recently Read reopens them in one click
 - **Telegram Search** - Sign in once with your own Telegram API ID, type a title and read CBZ/CBR/CBT files from public channels right in the browser; an optional local helper adds `site:t.me` web search
 - **Quick Read Mode** - Upload and read individual files without library setup
 - **Client-Side Only** - All processing happens in your browser, no server uploads required
@@ -113,7 +114,7 @@ Free Supabase projects are paused after a week without database activity. [`.git
 | `M` | Switch between scroll and grid view |
 | `W` / `Shift+W` | Cycle page width (scroll mode) |
 | `F` | Toggle fullscreen |
-| `Esc` | Close the comic |
+| `Esc` | Close the comic (also while it is still loading) |
 
 ## Getting Started (Development)
 
@@ -202,7 +203,8 @@ GitHub Pages serves over HTTPS, so Library Mode works on the live site.
 - Reader settings (view mode, page width) are stored in `localStorage` (key: `comic_reader_settings`)
 - Reading history entries hold `last_page`, `total_pages`, `source`, `timestamp`, `thumbnail` and `hidden_from_recent`; all access goes through `readHistory`/`writeHistory`/`saveLastPageRead`, the seam for a future synced store
 - Offline copies live in IndexedDB `ComicReaderDB` (store `files`); Telegram search settings in `localStorage` (key: `comic_reader_finder`); Telegram login in `comic_reader_tg` (API ID only), `sessionStorage` `comic_reader_tg_tab` and the encrypted `comic_reader_tg_vault`
-- Archive pages are filtered to images (`__MACOSX`, dotfiles and metadata such as `ComicInfo.xml` are skipped) and sorted naturally (`page2` before `page10`)
+- Archive pages are filtered to images (`__MACOSX`, dotfiles, empty entries and metadata such as `ComicInfo.xml` are skipped) and sorted naturally (`page2` before `page10`)
+- A page that cannot be extracted or decoded shows a "Page could not be read" placeholder instead of stopping the comic; RAR/TAR pages that give no answer within 30 s count as unreadable
 - Folder handles are stored in `IndexedDB` (database: `ComicReaderDB`)
 - Thumbnails are base64-encoded JPEG stored in localStorage
 - Uses vanilla JavaScript (no jQuery required)

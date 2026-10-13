@@ -41,6 +41,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const resumeToastEl = document.getElementById('resumeToast');
     const resumeToastTextEl = document.getElementById('resumeToastText');
     const resumeStartOverBtn = document.getElementById('resumeStartOverBtn');
+    const loadingCancelBtn = document.getElementById('loadingCancelBtn');
 
     const HISTORY_KEY = 'comic_reader_userpref';
     const SETTINGS_KEY = 'comic_reader_settings';
@@ -58,6 +59,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'avif']);
     const pageNameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+    // rar/tar pages that never call back are given up after this long
+    const PAGE_READ_TIMEOUT = 30000;
+    // shown (and opened in the gallery) in place of a page that could not be extracted
+    const PAGE_ERROR_SRC = 'data:image/svg+xml,' + encodeURIComponent(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="600" viewBox="0 0 400 600">'
+        + '<rect width="400" height="600" fill="#1a1c20"/>'
+        + '<g fill="none" stroke="#6b7280" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">'
+        + '<rect x="150" y="190" width="100" height="130" rx="10"/><path d="M178 233l44 44M222 233l-44 44"/></g>'
+        + '<text x="200" y="380" fill="#9ca3af" font-family="system-ui, sans-serif" font-size="22" text-anchor="middle">Page could not be read</text>'
+        + '</svg>'
+    );
 
     let comicsDirectoryHandle = null;
     let currentView = 'initial';
@@ -79,7 +91,11 @@ document.addEventListener('DOMContentLoaded', () => {
         token: 0,
         filename: '',
         source: 'upload',
+        // the opened File, cached once it turns out to be a readable comic
+        file: null,
         pages: [],
+        // { done, total } while pages are still being extracted
+        loading: null,
         urls: [],
         current: 0,
         tracking: false,
@@ -562,12 +578,9 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.open = true;
         reader.filename = file.name;
         reader.source = options.source || 'upload';
+        reader.file = file;
         document.dispatchEvent(new CustomEvent('comicreader:reader-opened', { detail: { filename: file.name } }));
         if (reopenNoticeEl) reopenNoticeEl.hidden = true;
-        if (reader.source !== 'folder') {
-            // library files can be reopened from the folder; everything else gets a local copy
-            cacheComicFile(file, reader.source);
-        }
 
         document.body.classList.add('reader-open');
         readerBarEl.hidden = false;
@@ -584,98 +597,164 @@ document.addEventListener('DOMContentLoaded', () => {
         progressTextElement.textContent = 'Opening archive...';
         sePreConElement.style.display = 'block';
 
-        // Open the file as an archive
-        archiveOpenFile(file, (archive, err) => {
+        loadArchive(file, token);
+    }
+
+    // every failure (unreadable file, not an archive, no pages) ends in the reader error
+    async function loadArchive(file, token) {
+        let archive;
+        try {
+            const buffer = await file.arrayBuffer();
             if (token !== reader.token) return;
-            if (!archive) {
-                showReaderError(err);
-                return;
-            }
-            renderArchive(archive, token).catch((e) => {
-                if (token === reader.token) showReaderError(e);
-            });
-        });
+            archive = archiveOpenArrayBuffer(file.name, buffer);
+        } catch (err) {
+            if (token === reader.token) showReaderError(err);
+            return;
+        }
+        try {
+            await renderArchive(archive, token);
+        } catch (err) {
+            if (token === reader.token) showReaderError(err);
+        }
     }
 
     async function renderArchive(archive, token) {
-        const entries = archive.entries
-            .filter(isPageEntry)
-            .sort((a, b) => pageNameCollator.compare(a.name, b.name));
+        try {
+            const entries = archive.entries
+                .filter(isPageEntry)
+                .sort((a, b) => pageNameCollator.compare(a.name, b.name));
 
-        if (entries.length === 0) {
-            throw new Error('No images found in this archive.');
-        }
-
-        const header = document.createElement('div');
-        header.className = 'output-header';
-        header.innerHTML = '<b></b><br><i>Click on an image to enlarge</i>';
-        header.querySelector('b').textContent = archive.file_name;
-        outputElement.appendChild(header);
-
-        // create all page slots up front so the order never depends on extraction timing
-        const fragment = document.createDocumentFragment();
-        reader.pages = entries.map((entry, i) => {
-            const a = document.createElement('a');
-            a.className = 'comic-page';
-            a.dataset.index = String(i);
-
-            const img = document.createElement('img');
-            img.className = 'imgUrl';
-            img.alt = `Page ${i + 1}`;
-            img.decoding = 'async';
-            img.draggable = false;
-
-            a.appendChild(img);
-            fragment.appendChild(a);
-            return a;
-        });
-        outputElement.appendChild(fragment);
-        outputElement.appendChild(createStripEnd());
-        updatePageIndicator();
-
-        for (let i = 0; i < entries.length; i++) {
-            progressTextElement.textContent = `Reading ${i + 1}/${entries.length} pages`;
-            const data = await readEntryData(entries[i]);
-            if (token !== reader.token) return;
-
-            const page = reader.pages[i];
-            if (!data) {
-                page.classList.add('page-error');
-                continue;
+            if (entries.length === 0) {
+                throw new Error('No images found in this archive.');
             }
-            const url = URL.createObjectURL(new Blob([data], { type: getMIME(entries[i].name) }));
-            reader.urls.push(url);
-            page.href = url;
-            page.firstChild.src = url;
-        }
 
-        archiveClose(archive);
-        sePreConElement.style.display = 'none';
+            if (reader.file && reader.source !== 'folder') {
+                // library files can be reopened from the folder; everything else gets a local copy
+                cacheComicFile(reader.file, reader.source);
+            }
 
-        generateThumbnail(token);
-        await restorePosition(token);
-        if (token === reader.token) {
-            // records the page count so "Recently Read" can show a percentage right away
-            saveLastPageRead(reader.filename, reader.current);
+            const header = document.createElement('div');
+            header.className = 'output-header';
+            header.innerHTML = '<b></b><br><i>Click on an image to enlarge</i>';
+            header.querySelector('b').textContent = archive.file_name;
+            outputElement.appendChild(header);
+
+            // create all page slots up front so the order never depends on extraction timing
+            const fragment = document.createDocumentFragment();
+            reader.pages = entries.map((entry, i) => {
+                const a = document.createElement('a');
+                a.className = 'comic-page';
+                a.dataset.index = String(i);
+
+                const img = document.createElement('img');
+                img.className = 'imgUrl';
+                img.alt = `Page ${i + 1}`;
+                img.decoding = 'async';
+                img.draggable = false;
+                // bytes that are not a decodable image (e.g. a damaged stored entry) get the same placeholder
+                img.addEventListener('error', () => markPageError(a, i));
+
+                a.appendChild(img);
+                fragment.appendChild(a);
+                return a;
+            });
+            outputElement.appendChild(fragment);
+            outputElement.appendChild(createStripEnd());
+            reader.loading = { done: 0, total: entries.length };
+            updatePageIndicator();
+
+            let revealed = false;
+            for (let i = 0; i < entries.length; i++) {
+                if (!revealed) progressTextElement.textContent = `Reading ${i + 1}/${entries.length} pages`;
+                const data = await readEntryData(entries[i], archive);
+                if (token !== reader.token) return;
+
+                const page = reader.pages[i];
+                if (data) {
+                    const url = URL.createObjectURL(new Blob([data], { type: getMIME(entries[i].name) }));
+                    reader.urls.push(url);
+                    page.href = url;
+                    page.firstChild.src = url;
+                } else {
+                    markPageError(page, i);
+                }
+                reader.loading.done = i + 1;
+                updatePageIndicator();
+
+                // show the comic once every page up to the resume page is there; the target is
+                // read again each time so a sync pull that lands meanwhile is honoured
+                if (!revealed && i >= Math.min(getLastPageRead(reader.filename), entries.length - 1)) {
+                    revealed = true;
+                    revealComic(token);
+                }
+            }
+
+            reader.loading = null;
+            updatePageIndicator();
+        } finally {
+            archiveClose(archive);
         }
     }
 
-    function readEntryData(entry) {
+    // the placeholder is also the gallery item, so gallery indices stay equal to page indices
+    function markPageError(page, index) {
+        if (page.classList.contains('page-error')) return;
+        page.classList.add('page-error');
+        page.href = PAGE_ERROR_SRC;
+        page.firstChild.src = PAGE_ERROR_SRC;
+        page.firstChild.alt = `Page ${index + 1} could not be read`;
+    }
+
+    // hides the overlay and jumps to the saved page while the remaining pages keep loading
+    function revealComic(token) {
+        sePreConElement.style.display = 'none';
+        generateThumbnail(token);
+        restorePosition(token).then(() => {
+            // records the page count so "Recently Read" can show a percentage right away
+            if (token === reader.token) saveLastPageRead(reader.filename, reader.current);
+        }).catch((err) => console.warn('Could not restore the reading position:', err));
+    }
+
+    // always settles: zip pages are read synchronously, other formats race a watchdog
+    async function readEntryData(entry, archive) {
+        if (archive.archive_type === 'zip') {
+            let data = null;
+            try {
+                // JSZip inflates here and throws on corrupt data
+                data = archive.handle.zip.files[entry.name].asArrayBuffer();
+            } catch (e) {
+                console.warn('Failed to read', entry.name, e);
+            }
+            // let the page (and the progress) render before the next one is inflated
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return data && data.byteLength ? data : null;
+        }
+
         return new Promise((resolve) => {
+            const timer = setTimeout(() => {
+                console.warn('Gave up reading', entry.name, `after ${PAGE_READ_TIMEOUT / 1000} s`);
+                resolve(null);
+            }, PAGE_READ_TIMEOUT);
+            const finish = (data) => {
+                clearTimeout(timer);
+                resolve(data && data.byteLength ? data : null);
+            };
             try {
                 entry.readData((data, err) => {
                     if (err) console.warn('Failed to read', entry.name, err);
-                    resolve(data || null);
+                    finish(data);
                 });
             } catch (e) {
                 console.warn('Failed to read', entry.name, e);
-                resolve(null);
+                finish(null);
             }
         });
     }
 
     function isPageEntry(entry) {
         if (entry.is_file === false) return false;
+        // empty entries are never a page, and libunrar never calls back for them
+        if (entry.size_uncompressed === 0) return false;
         const parts = entry.name.split(/[\\/]/);
         if (parts.includes('__MACOSX')) return false;
         const base = parts[parts.length - 1];
@@ -699,6 +778,7 @@ document.addEventListener('DOMContentLoaded', () => {
         sePreConElement.style.display = 'none';
         outputElement.innerHTML = '';
         reader.pages = [];
+        reader.loading = null;
         const box = document.createElement('div');
         box.className = 'reader-error';
         box.textContent = String(err?.message || err || 'Could not open this file.');
@@ -714,6 +794,8 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.urls.forEach((url) => URL.revokeObjectURL(url));
         reader.urls = [];
         reader.pages = [];
+        reader.loading = null;
+        reader.file = null;
         reader.current = 0;
         reader.tracking = false;
         outputElement.innerHTML = '';
@@ -859,7 +941,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function updatePageIndicator() {
         const total = reader.pages.length;
-        readerPageEl.textContent = `${total ? reader.current + 1 : 0} / ${total}`;
+        const loading = reader.loading && reader.loading.done < reader.loading.total
+            ? ` · loading ${Math.floor((reader.loading.done / reader.loading.total) * 100)}%`
+            : '';
+        readerPageEl.textContent = `${total ? reader.current + 1 : 0} / ${total}${loading}`;
     }
 
     function updateProgress() {
@@ -967,11 +1052,12 @@ document.addEventListener('DOMContentLoaded', () => {
         readerBarEl.classList.add('rb-hidden');
     }
 
-    // `action` = { label, run } replaces the default "Start over" button
+    // `action` = { label, run } replaces the default "Start over" button, false shows no button
     function showToast(text, action = null) {
         resumeToastTextEl.textContent = text;
+        resumeStartOverBtn.hidden = action === false;
         resumeStartOverBtn.textContent = action ? action.label : 'Start over';
-        reader.toastAction = action;
+        reader.toastAction = action || null;
         resumeToastEl.hidden = false;
         clearTimeout(reader.toastTimer);
         reader.toastTimer = setTimeout(hideToast, 6000);
@@ -1045,11 +1131,19 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        if (!page || !page.getAttribute('href')) return;
+        if (!page) return;
+        if (reader.loading) {
+            // the gallery reads its items once, so it waits until every page is there
+            event.preventDefault();
+            showToast('Pages are still loading…', false);
+            return;
+        }
+        if (!page.getAttribute('href')) return;
         if (!outputElement.getAttribute('lg-uid')) {
             // init the gallery on first click, then replay the click so it opens on this page.
             // dispatchEvent instead of click(): click() is ignored while this element's click is in progress
             event.preventDefault();
+            if (!window.lightGallery) return;
             initGallery();
             page.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
         }
@@ -1058,6 +1152,8 @@ document.addEventListener('DOMContentLoaded', () => {
     /* reader events */
 
     readerCloseBtn.addEventListener('click', closeReader);
+    // the loading overlay covers the reader bar, so it has its own way out
+    if (loadingCancelBtn) loadingCancelBtn.addEventListener('click', closeReader);
     readerWidthBtn.addEventListener('click', () => cycleWidth(1));
     readerFullscreenBtn.addEventListener('click', toggleFullscreen);
     modeButtons.forEach((btn) => {
@@ -1242,10 +1338,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function generateThumbnail(token) {
         const img = reader.pages[0]?.firstChild;
-        if (!img || !img.src) return;
+        if (!img || !img.src || reader.pages[0].classList.contains('page-error')) return;
 
         const run = () => {
-            if (token !== reader.token || !img.naturalWidth) return;
+            if (token !== reader.token || !img.naturalWidth || reader.pages[0]?.classList.contains('page-error')) return;
             try {
                 const canvas = document.createElement('canvas');
                 const ctx = canvas.getContext('2d');
