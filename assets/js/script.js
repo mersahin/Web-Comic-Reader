@@ -18,6 +18,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const libraryViewEl = document.getElementById('libraryView');
     const quickReadViewEl = document.getElementById('quickReadView');
     const searchViewEl = document.getElementById('searchView');
+    const accountViewEl = document.getElementById('accountView');
+    const accountBackBtn = document.getElementById('accountBackBtn');
     const searchTelegramBtn = document.getElementById('searchTelegramBtn');
     const librarySearchBtn = document.getElementById('librarySearchBtn');
     const searchBackBtn = document.getElementById('searchBackBtn');
@@ -60,9 +62,12 @@ document.addEventListener('DOMContentLoaded', () => {
     let comicsDirectoryHandle = null;
     let currentView = 'initial';
     let viewBeforeSearch = 'initial';
+    let viewBeforeAccount = 'initial';
     let dbPromise = null;
 
     const settings = loadSettings();
+    let lastSavedSettings = JSON.stringify(settings);
+    let applyingRemoteSettings = false;
 
     // reader state; `token` invalidates async work of a previously opened comic
     const reader = {
@@ -160,6 +165,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // back to library button
     if (backToLibraryBtn) {
         backToLibraryBtn.addEventListener('click', async () => {
+            if (!comicsDirectoryHandle) {
+                showInitialView();
+                return;
+            }
             if (comicsDirectoryHandle) {
                 const permission = await comicsDirectoryHandle.queryPermission({ mode: 'read' });
                 if (permission === 'granted') {
@@ -227,6 +236,10 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    if (accountBackBtn) {
+        accountBackBtn.addEventListener('click', () => returnFromAccount());
+    }
+
     if (searchBackBtn) {
         searchBackBtn.addEventListener('click', async () => {
             if (viewBeforeSearch === 'library' && comicsDirectoryHandle) {
@@ -256,7 +269,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function showOnly(viewEl) {
-        [initialViewEl, libraryViewEl, quickReadViewEl, searchViewEl].forEach((el) => {
+        [initialViewEl, libraryViewEl, quickReadViewEl, searchViewEl, accountViewEl].forEach((el) => {
             if (el) el.style.display = el === viewEl ? 'block' : 'none';
         });
     }
@@ -264,6 +277,25 @@ document.addEventListener('DOMContentLoaded', () => {
     function showInitialView() {
         currentView = 'initial';
         showOnly(initialViewEl);
+    }
+
+    function showAccountView() {
+        if (currentView !== 'account') viewBeforeAccount = currentView;
+        currentView = 'account';
+        showOnly(accountViewEl);
+        if (window.CloudSync) window.CloudSync.onShow();
+    }
+
+    async function returnFromAccount() {
+        if (viewBeforeAccount === 'library' && comicsDirectoryHandle) {
+            await showLibraryMode();
+        } else if (viewBeforeAccount === 'search') {
+            showSearchView();
+        } else if (viewBeforeAccount === 'quick') {
+            showQuickReadMode();
+        } else {
+            showInitialView();
+        }
     }
 
     function showSearchView() {
@@ -323,9 +355,10 @@ document.addEventListener('DOMContentLoaded', () => {
             subtitleEl.textContent = 'Auto-track progress, browse all comics';
         }
 
-        // show back to library button only if we have a directory handle
+        // back goes to the library when there is one, otherwise to the start screen
         if (backToLibraryBtn) {
-            backToLibraryBtn.style.display = comicsDirectoryHandle ? 'block' : 'none';
+            backToLibraryBtn.style.display = 'block';
+            backToLibraryBtn.textContent = comicsDirectoryHandle ? 'Back to library' : 'Back';
         }
     }
 
@@ -341,6 +374,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } else if (currentView === 'search') {
             showSearchView();
+        } else if (currentView === 'account') {
+            showAccountView();
         } else if (currentView === 'quick') {
             showQuickReadMode();
         } else {
@@ -1112,10 +1147,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function saveSettings() {
+        const json = JSON.stringify(settings);
         try {
-            localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+            localStorage.setItem(SETTINGS_KEY, json);
         } catch (e) {
             // storage unavailable (private mode etc.) - settings stay in memory
+        }
+        if (json !== lastSavedSettings) {
+            lastSavedSettings = json;
+            if (!applyingRemoteSettings) document.dispatchEvent(new CustomEvent('comicreader:settings-changed'));
         }
     }
 
@@ -1128,12 +1168,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function writeHistory(history) {
+    // notify=false is used when the change came from sync, so it is not sent back
+    function writeHistory(history, notify = true) {
         try {
             localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
         } catch (e) {
             console.error('Failed to save reading history:', e);
         }
+        if (notify) document.dispatchEvent(new CustomEvent('comicreader:history-changed'));
     }
 
     function generateThumbnail(token) {
@@ -1170,7 +1212,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     /*
      * Reading history: localStorage, one entry per file name
-     *   { last_page, total_pages, source, timestamp, thumbnail, hidden_from_recent }
+     *   { last_page, total_pages, source, timestamp, updated_at, thumbnail, hidden_from_recent }
+     * timestamp = last read (list order), updated_at = last change (sync merge).
      * Kept behind readHistory/writeHistory/saveLastPageRead so a synced store can replace it later.
      */
     function saveLastPageRead(filename, pageIndex, thumbnail = null) {
@@ -1184,6 +1227,7 @@ document.addEventListener('DOMContentLoaded', () => {
             total_pages: (isOpen && reader.pages.length) ? reader.pages.length : (existing.total_pages || null),
             source: isOpen ? reader.source : (existing.source || null),
             timestamp: Date.now(),
+            updated_at: Date.now(),
             thumbnail: thumbnail || existing.thumbnail || null
         };
         writeHistory(readingHistory);
@@ -1207,7 +1251,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const readingHistory = readHistory();
         const names = filename === null ? Object.keys(readingHistory) : [filename];
         names.forEach((name) => {
-            if (readingHistory[name]) readingHistory[name].hidden_from_recent = true;
+            if (readingHistory[name]) {
+                readingHistory[name].hidden_from_recent = true;
+                readingHistory[name].updated_at = Date.now();
+            }
         });
         writeHistory(readingHistory);
         // the list entry is gone, so its offline copy is no longer needed
@@ -1456,6 +1503,33 @@ document.addEventListener('DOMContentLoaded', () => {
                 return false;
             }
         },
-        openRecent
+        openRecent,
+
+        // used by cloud-sync.js
+        showAccount: showAccountView,
+        getHistory: readHistory,
+        replaceHistory(history) {
+            writeHistory(history, false);
+            loadRecentComics();
+        },
+        getReaderSettings() {
+            return { mode: settings.mode, width: settings.width };
+        },
+        applyReaderSettings(remote) {
+            if (!remote) return;
+            applyingRemoteSettings = true;
+            try {
+                if (STRIP_WIDTHS.some((w) => w.key === remote.width)) settings.width = remote.width;
+                const mode = remote.mode === 'grid' || remote.mode === 'strip' ? remote.mode : settings.mode;
+                if (reader.open) {
+                    applyMode(mode);
+                } else {
+                    settings.mode = mode;
+                    saveSettings();
+                }
+            } finally {
+                applyingRemoteSettings = false;
+            }
+        }
     };
 });

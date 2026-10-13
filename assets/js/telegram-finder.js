@@ -182,18 +182,23 @@ document.addEventListener('DOMContentLoaded', () => {
         els.channelCount.textContent = settings.channels.length ? `(${settings.channels.length})` : '';
     }
 
-    function addMyChannel(name) {
-        settings.channels = unique([...settings.channels, name]).slice(0, 20);
-        els.channelList.value = settings.channels.map((c) => '@' + c).join('\n');
+    // notify=false when the list came from sync, so it is not sent back
+    function setChannels(names, notify = true) {
+        const next = unique(names).slice(0, 20);
+        const changed = next.join(',') !== settings.channels.join(',');
+        settings.channels = next;
+        els.channelList.value = next.map((c) => '@' + c).join('\n');
         saveSettings();
         updateChannelCount();
+        if (changed && notify) document.dispatchEvent(new CustomEvent('comicreader:channels-changed'));
+    }
+
+    function addMyChannel(name) {
+        setChannels([...settings.channels, name]);
     }
 
     els.channelList.addEventListener('change', () => {
-        settings.channels = unique(els.channelList.value.split(/[\s,]+/).map(parseChannel).filter(Boolean)).slice(0, 20);
-        els.channelList.value = settings.channels.map((c) => '@' + c).join('\n');
-        saveSettings();
-        updateChannelCount();
+        setChannels(els.channelList.value.split(/[\s,]+/).map(parseChannel).filter(Boolean));
     });
 
     els.helperUrl.addEventListener('change', () => {
@@ -1174,6 +1179,8 @@ document.addEventListener('DOMContentLoaded', () => {
     /* ---------------- public ---------------- */
 
     window.TelegramFinder = {
+        getChannels: () => [...settings.channels],
+        setChannels: (names) => setChannels(names, false),
         onShow() {
             refreshStatus();
             setTimeout(() => els.query.focus(), 50);

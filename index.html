@@ -191,12 +191,71 @@
             <div id="finderResults"></div>
         </div>
 
+        <div id="accountView" style="display:none;">
+            <div class="library-header">
+                <div class="library-header-left">
+                    <h1>Sync account</h1>
+                    <div id="syncStatus" class="current-folder"></div>
+                </div>
+                <div class="library-header-actions">
+                    <button id="accountBackBtn" class="link-btn">Back</button>
+                </div>
+            </div>
+
+            <div id="syncNotConfigured" class="notice" hidden>Sync is not set up for this site yet. The site owner connects a Supabase project in <code>assets/js/sync-config.js</code>; see "Sync across devices" in the README.</div>
+
+            <div id="syncSignedOut" hidden>
+                <p class="account-intro">Create an account to keep your reading progress, Recently Read and My channels in sync between your devices. Only you can see your data.</p>
+                <div class="account-tabs" role="tablist">
+                    <button type="button" class="account-tab active" data-tab="signin" role="tab" aria-selected="true">Sign in</button>
+                    <button type="button" class="account-tab" data-tab="signup" role="tab" aria-selected="false">Create account</button>
+                </div>
+                <form id="syncAuthForm" class="finder-form account-form">
+                    <label class="finder-field">Email
+                        <input id="syncEmail" type="email" required autocomplete="email" spellcheck="false">
+                    </label>
+                    <label class="finder-field">Password <span id="syncPasswordHint" class="finder-count" hidden>(at least 8 characters)</span>
+                        <input id="syncPassword" type="password" required minlength="8" autocomplete="current-password">
+                    </label>
+                    <label class="finder-check"><input id="syncPersist" type="checkbox"> Stay signed in on this device</label>
+                    <div class="finder-actions-row">
+                        <button type="submit" id="syncAuthSubmit" class="finder-submit">Sign in</button>
+                        <button type="button" id="syncForgotBtn" class="link-btn link-btn-small">Forgot password?</button>
+                    </div>
+                </form>
+            </div>
+
+            <form id="syncRecoveryForm" class="finder-form account-form" hidden>
+                <label class="finder-field">Choose a new password (at least 8 characters)
+                    <input id="syncNewPassword" type="password" required minlength="8" autocomplete="new-password">
+                </label>
+                <button type="submit" class="finder-submit">Save new password</button>
+            </form>
+
+            <div id="syncSignedIn" hidden>
+                <p>Signed in as <b id="syncUserEmail"></b>.</p>
+                <p class="account-note">Synced: reading progress and Recently Read, reader view settings and My channels. Comic files and Telegram logins stay on each device.</p>
+                <div class="finder-actions-row">
+                    <button type="button" id="syncNowBtn" class="finder-submit">Sync now</button>
+                    <button type="button" id="syncLogoutBtn" class="link-btn link-btn-small">Log out</button>
+                </div>
+                <button type="button" id="syncDeleteBtn" class="link-btn link-btn-small account-danger">Delete my synced data</button>
+            </div>
+
+            <div id="syncMessage" class="notice" hidden></div>
+        </div>
+
         <div id="recentComics" style="display:none;">
             <div class="section-header">
                 <h3>Recently Read</h3>
                 <button id="clearRecentBtn" class="link-btn link-btn-small" title="Remove all comics from this list. Reading progress is kept.">Clear</button>
             </div>
             <div id="recentComicsList"></div>
+        </div>
+
+        <div id="syncBar" class="sync-bar" hidden>
+            <span id="syncBarText">Keep your progress in sync across devices</span>
+            <button type="button" id="syncBarBtn" class="link-btn link-btn-small">Sign in</button>
         </div>
 
         <footer class="footer-default">
@@ -249,5 +308,7 @@
     <script src="https://unpkg.com/dropzone@6.3.5/dist/dropzone-min.js" integrity="sha384-wHTterC8uaPhGVKg8kmSlqcmI8CCFkOI+Mn51O3udobTBX0vQLs6a18vJqh0AnW3" crossorigin="anonymous"></script>
     <script src="./assets/js/script.js"></script>
     <script src="./assets/js/telegram-finder.js"></script>
+    <script src="./assets/js/sync-config.js"></script>
+    <script src="./assets/js/cloud-sync.js"></script>
 </body>
 </html>

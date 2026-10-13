@@ -18,6 +18,7 @@ Modern web-based comic book reader for CBR, CBZ, and CBT files with library mana
 - **Reading Progress** - Automatically saves your last read page and scrolls to it when you reopen
 - **Thumbnail Previews** - Auto-generated cover thumbnails for quick comic recognition
 - **Recently Read** - On the start screen: your last 20 comics with page, percentage and a progress bar; remove single entries or clear the list (progress is kept)
+- **Sync Across Devices** - Optional account (email + password) that keeps reading progress, Recently Read, reader settings and My channels in sync; each user sees only their own data
 - **Offline Copies** - Comics you open (uploads and Telegram downloads) are kept in the browser (IndexedDB, up to 1 GB, oldest dropped first) so Recently Read reopens them in one click
 - **Telegram Search** - Sign in once with your own Telegram API ID, type a title and read CBZ/CBR/CBT files from public channels right in the browser; an optional local helper adds `site:t.me` web search
 - **Quick Read Mode** - Upload and read individual files without library setup
@@ -71,6 +72,23 @@ It listens only on `127.0.0.1` and answers only this site and `localhost`. Searc
 ```bash
 cd tools/telegram-bundle && npm ci && npm run build
 ```
+
+### Sync Across Devices
+Click **Sign in** in the bar at the bottom of the panel, create an account with email and password, confirm the email, then sign in on each device.
+
+What is synced: reading progress and Recently Read (file name, page, page count, last read), reader view settings, and the My channels list. Comic files, thumbnails and Telegram logins stay on each device. For each comic the most recently changed version wins.
+
+The sign-in lasts until the tab is closed unless **Stay signed in on this device** is ticked. **Delete my synced data** removes everything from the server and logs out; the device keeps its own copy.
+
+#### Setting it up (once, by the site owner)
+1. Create a free project at [supabase.com](https://supabase.com) in the **Central EU (Frankfurt)** region.
+2. Open **SQL Editor**, paste [`supabase/schema.sql`](supabase/schema.sql) and run it. It creates the tables and the row level security rules that let each user read and write only their own rows.
+3. **Authentication > URL Configuration**: set **Site URL** to `https://mersahin.github.io/Web-Comic-Reader/` and add the same address under **Redirect URLs** (used by confirmation and password reset emails).
+4. **Authentication > Sign In / Providers > Email**: keep Email enabled and **Confirm email** on.
+5. **Project Settings > API**: copy the **Project URL** and the **anon / publishable** key into [`assets/js/sync-config.js`](assets/js/sync-config.js), then commit and push. The anon key is meant to be public; the row level security rules protect the data. Never put the `service_role` key in the site.
+6. Optional: to keep the site for yourself, create your account first, then turn off **Allow new users to sign up** under Authentication.
+
+Free Supabase projects are paused after a week without activity and can be resumed from the dashboard.
 
 ### Keyboard Shortcuts (while reading)
 | Key | Action |
@@ -151,11 +169,14 @@ GitHub Pages serves over HTTPS, so Library Mode works on the live site.
 │   └── js/
 │       ├── script.js      # Main application logic
 │       ├── telegram-finder.js  # Telegram search UI (in-browser client or local helper)
+│       ├── cloud-sync.js       # Account + sync of progress, settings, My channels
+│       ├── sync-config.js      # Supabase project URL + anon key (fill in to enable sync)
 │       ├── vendor/telegram.js  # GramJS browser bundle (built by tools/telegram-bundle)
 │       └── uncompress/
 │           └── uncompress.js  # Archive extraction
 ├── tools/tg-finder/tg_finder.py # Optional local helper (web search)
 ├── tools/telegram-bundle/       # Build script for the GramJS bundle
+├── supabase/schema.sql          # Tables + row level security for sync
 ├── .github/workflows/pages.yml  # GitHub Pages deployment
 ├── README.md
 └── LICENSE
