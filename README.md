@@ -45,7 +45,7 @@ Open **Search Telegram**, sign in once under **Telegram account** with your own 
 Everything then runs in the browser, nothing to install: the bundled [GramJS](https://github.com/gram-js/gramjs) client (`assets/js/vendor/telegram.js`) talks to Telegram directly over WebSocket.
 
 How a search works:
-1. Channels listed under **My channels** are always searched.
+1. Channels listed under **My channels** (up to 50) are always searched.
 2. Telegram's own channel search finds public channels matching the title.
 3. Each channel is searched for documents; only `.cbz`, `.cbr` and `.cbt` files are listed. If none match but the channel name did, its latest comics are shown.
 4. Files in chats you have joined are searched too.
@@ -84,8 +84,9 @@ Sync is automatic, there is nothing to press:
 - For each comic the newest change wins. Once the SQL block at the end of `supabase/schema.sql` has been run, the server also keeps the newer row when a device with older data sends it, and only changed rows are fetched.
 - If the same comic is open on another device, the reader never jumps; it offers **Go to page N** instead. View settings from another device apply when the comic is closed.
 - The bar turns amber while offline or retrying and red after repeated failures. **Sync now** forces a full check.
+- A comic whose file name the server cannot store (longer than 512 characters, or with invalid characters) stays on this device only and never blocks the rest of the sync.
 
-The sign-in lasts until the tab is closed unless **Stay signed in on this device** is ticked. **Delete my synced data** removes everything from the server and logs out; the device keeps its own copy.
+The sign-in lasts until the tab is closed unless **Stay signed in on this device** is ticked. **Log out** signs out this browser only; your other devices stay signed in, and it works offline too. **Delete my synced data** removes everything from the server and logs out; the device keeps its own copy and does not upload it again when you sign in later (only new reading is synced). An expired or already used confirmation or reset link shows a message in the Account view.
 
 #### Setting it up (once, by the site owner)
 1. Create a free project at [supabase.com](https://supabase.com) in the **Central EU (Frankfurt)** region.

@@ -43,6 +43,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const UPSERT_CHUNK = 200;
     const PROGRESS_COLS = 'file_name,last_page,total_pages,source,hidden,read_at,updated_at';
     const SETTINGS_COLS = 'reader,channels,updated_at';
+    // Postgres refuses the row itself: check constraint, NUL or bad text, value too long
+    const ROW_ERRORS = ['23514', '22P05', '22P02', '22021', '22001'];
+    const ABORTED = 'sync-aborted';
+    // supabase-js's default storage key for this project's session
+    const AUTH_KEY = (() => {
+        try {
+            return `sb-${new URL(config.supabaseUrl).hostname.split('.')[0]}-auth-token`;
+        } catch (e) {
+            return '';
+        }
+    })();
+    // a confirmation or reset link put its result (a session or an error) into the URL
+    const fromEmailLink = /(?:^|[#?&])(?:access_token|error|error_code|error_description)=/.test(window.location.hash + window.location.search);
 
     const $ = (id) => document.getElementById(id);
     const els = {
@@ -90,6 +103,9 @@ document.addEventListener('DOMContentLoaded', () => {
     let lastPullAt = 0;
     let readerOpen = false;
     let flushing = false;   // requests started now get keepalive, so they survive closing the tab
+    let deleting = false;   // "Delete my synced data" is running: no sync cycles
+    let authSeq = 0;        // only the newest auth event sets `user`
+    const skippedNames = new Set(); // names the server cannot store, reported once
 
     /* ---------------- storage ---------------- */
 
@@ -197,9 +213,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     },
                     global: { fetch: wrappedFetch }
                 });
-                client.auth.onAuthStateChange((event, session) => {
+                client.auth.onAuthStateChange((event) => {
                     // keep the callback synchronous; Supabase runs it inside its auth lock
-                    setTimeout(() => onAuthChange(event, session), 0);
+                    setTimeout(() => onAuthChange(event), 0);
+                });
+                // an expired or already used email link: the library keeps quiet and leaves the error in the URL
+                client.auth.initialize().then(({ error }) => {
+                    if (!error || !fromEmailLink) return;
+                    history.replaceState(null, '', redirectUrl());
+                    app() && app().showAccount();
+                    showMessage(/expired|invalid/i.test(error.message || '')
+                        ? 'This email link is invalid or has expired. Request a new one below.'
+                        : error.message || String(error), 'error');
                 });
                 return client;
             }).finally(() => { clientPromise = null; });
@@ -207,23 +232,60 @@ document.addEventListener('DOMContentLoaded', () => {
         return clientPromise;
     }
 
-    function onAuthChange(event, session) {
-        const previous = user && user.id;
-        user = session && session.user ? session.user : null;
+    /*
+     * Events can come from other tabs (supabase-js relays them over a
+     * BroadcastChannel together with that tab's session), so `user` is always
+     * read from this tab's own session.
+     */
+    async function onAuthChange(event) {
+        const seq = ++authSeq;
         if (event === 'PASSWORD_RECOVERY') {
             recovering = true;
             app() && app().showAccount();
         }
-        if (user && user.id !== previous) {
-            requestSync('signin', { pull: true, full: true });
-            startTicker();
+        let session = null;
+        try {
+            const { data, error } = await (await getClient()).auth.getSession();
+            session = data && data.session;
+            // a refresh failed offline and the library kept the session: nothing changed yet
+            if (error && !session && hasStoredSession()) return;
+        } catch (err) {
+            return;
         }
-        if (!user) {
-            stopTicker();
-            clearTimeout(pushTimer);
-            pushTimer = null;
+        if (seq !== authSeq) return;
+
+        const previous = user ? user.id : null;
+        user = session && session.user ? session.user : null;
+        if ((user ? user.id : null) !== previous) {
+            // the previous account's timers, errors and backoff do not carry over
+            stopTimers();
+            failures = 0;
+            lastError = '';
+            if (user) {
+                requestSync('signin', { pull: true, full: true });
+                startTicker();
+            }
         }
         render();
+    }
+
+    const hasStoredSession = () => Boolean(AUTH_KEY) && authStorage.getItem(AUTH_KEY) !== null;
+
+    // what signOut removes; done by hand when the library could not finish (offline, expired token)
+    function removeAuthKeys() {
+        if (!AUTH_KEY) return;
+        ['', '-user', '-code-verifier', '-flows-code-verifier'].forEach((suffix) => authStorage.removeItem(AUTH_KEY + suffix));
+    }
+
+    // ends the session in this browser only; the user's other devices stay signed in
+    async function signOutHere() {
+        let error = null;
+        try {
+            ({ error } = await (await getClient()).auth.signOut({ scope: 'local' }));
+        } catch (err) {
+            error = err;
+        }
+        if (error) removeAuthKeys();
     }
 
     /* ---------------- UI ---------------- */
@@ -337,9 +399,14 @@ document.addEventListener('DOMContentLoaded', () => {
             if (mode === 'signup') {
                 const { data, error } = await auth.signUp({ email, password, options: { emailRedirectTo: redirectUrl() } });
                 if (error) throw error;
-                if (!data.session) {
-                    showMessage('Account created. Open the link in the email we just sent to confirm it, then sign in here.', 'info');
+                // setMode clears the message, so it goes first
+                if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+                    // with email confirmation on, Supabase answers a registered address like a new one and sends nothing
                     setMode('signin');
+                    showMessage('An account with this email already exists. Sign in or use "Forgot password?".', 'error');
+                } else if (!data.session) {
+                    setMode('signin');
+                    showMessage('Account created. Open the link in the email we just sent to confirm it, then sign in here.', 'info');
                 }
             } else {
                 const { error } = await auth.signInWithPassword({ email, password });
@@ -389,38 +456,63 @@ document.addEventListener('DOMContentLoaded', () => {
     els.syncNow.addEventListener('click', () => window.CloudSync.sync());
 
     els.logout.addEventListener('click', async () => {
-        clearTimeout(pushTimer);
-        pushTimer = null;
-        await Promise.race([requestSync('push'), wait(4000)]);
+        if (!user) return;
+        busy(els.signedIn, true);
+        stopTimers();
         try {
-            await (await getClient()).auth.signOut();
-        } catch (err) {
-            // the local session is gone either way
+            // send what is still pending, but never wait long for it
+            await Promise.race([requestSync('push'), wait(4000)]);
+            await signOutHere();
+        } finally {
+            user = null;
+            failures = 0;
+            lastError = '';
+            busy(els.signedIn, false);
+            showMessage('Logged out. Your progress stays on this device.', 'info');
+            render();
         }
-        user = null;
-        showMessage('Logged out. Your progress stays on this device.', 'info');
-        render();
     });
 
     els.deleteData.addEventListener('click', async () => {
-        if (!user) return;
+        if (!user || deleting) return;
         if (!confirm('Delete your synced progress, settings and channel list from the server?\nThis device keeps its own copy. You will be logged out.')) return;
+        const uid = user.id;
+        deleting = true;
         busy(els.signedIn, true);
+        stopTimers();
+        queued = null;
         try {
-            const db = await getClient();
-            const progress = await db.from('reading_progress').delete().eq('user_id', user.id);
-            if (progress.error) throw progress.error;
-            const prefs = await db.from('user_settings').delete().eq('user_id', user.id);
-            if (prefs.error) throw prefs.error;
-            clearTimeout(pushTimer);
-            saveState({ lastSyncAt: 0 });
-            await db.auth.signOut();
+            // a running cycle stops before its next write; then nothing can re-insert rows meanwhile
+            if (running) await running;
+            await withSyncLock(async () => {
+                const db = await getClient();
+                const progress = await db.from('reading_progress').delete().eq('user_id', uid);
+                if (progress.error) throw progress.error;
+                const prefs = await db.from('user_settings').delete().eq('user_id', uid);
+                if (prefs.error) throw prefs.error;
+                // not a first sync next time: this device's copy is not uploaded again at the next sign-in
+                saveState({
+                    userId: uid,
+                    lastSyncAt: Date.now(),
+                    pending: {},
+                    settingsPending: false,
+                    cursor: null,
+                    settingsCursor: null,
+                    settingsSeenAt: 0,
+                    lastFullAt: 0
+                });
+            });
+            await signOutHere();
             user = null;
+            failures = 0;
+            lastError = '';
             showMessage('Your synced data was deleted from the server and you are logged out.', 'info');
         } catch (err) {
             showMessage(err.message || String(err), 'error');
         } finally {
+            deleting = false;
             busy(els.signedIn, false);
+            if (user) startTicker();
             render();
         }
     });
@@ -428,7 +520,17 @@ document.addEventListener('DOMContentLoaded', () => {
     /* ---------------- sync ---------------- */
 
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-    const toIso = (ms) => new Date(ms || Date.now()).toISOString();
+    // a missing, broken or out-of-range time becomes now, so toISOString never throws
+    const safeMs = (v) => (Number.isFinite(v) && v > 0 && v < 8.64e15 ? v : Date.now());
+    const toIso = (ms) => new Date(safeMs(ms)).toISOString();
+    const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?:^|[^\ud800-\udbff])[\udc00-\udfff]/;
+    // what reading_progress.file_name accepts: 1 to 512 characters, no NUL, valid Unicode
+    const validName = (name) => typeof name === 'string'
+        && name.length >= 1
+        && (name.length <= 512 || Array.from(name).length <= 512) // char_length counts code points
+        && !name.includes('\u0000')
+        && (typeof name.isWellFormed === 'function' ? name.isWellFormed() : !LONE_SURROGATE.test(name));
+    const isRowError = (error) => Boolean(error) && ROW_ERRORS.includes(error.code);
     const parseTime = (value) => {
         const ms = Date.parse(value);
         return Number.isFinite(ms) ? ms : 0;
@@ -453,10 +555,24 @@ document.addEventListener('DOMContentLoaded', () => {
         return best ? new Date(best).toISOString() : null;
     }
 
-    function rowFromEntry(fileName, entry) {
+    // a cycle stops before its next write when the account changed or its data is being deleted
+    function checkUser(uid) {
+        if (user && user.id === uid && !deleting) return;
+        const err = new Error('Sync stopped because the account changed');
+        err.code = ABORTED;
+        throw err;
+    }
+
+    function skipName(name, reason) {
+        if (skippedNames.has(name)) return;
+        skippedNames.add(name);
+        console.warn(`Sync skips "${String(name).slice(0, 80)}" (kept on this device only): ${reason}`);
+    }
+
+    function rowFromEntry(uid, fileName, entry) {
         const source = ['upload', 'folder', 'telegram'].includes(entry.source) ? entry.source : null;
         return {
-            user_id: user.id,
+            user_id: uid,
             file_name: fileName,
             last_page: Math.max(0, entry.last_page | 0),
             total_pages: entry.total_pages > 0 ? entry.total_pages | 0 : null,
@@ -491,11 +607,27 @@ document.addEventListener('DOMContentLoaded', () => {
             || (a.source || null) !== (b.source || null);
     }
 
-    async function upsertProgress(db, rows) {
+    // returns the names the database refused; one such row never blocks the others
+    async function upsertProgress(db, uid, rows) {
+        const upsert = (list) => db.from('reading_progress').upsert(list, { onConflict: 'user_id,file_name' });
+        const refused = [];
         for (let i = 0; i < rows.length; i += UPSERT_CHUNK) {
-            const { error } = await db.from('reading_progress').upsert(rows.slice(i, i + UPSERT_CHUNK), { onConflict: 'user_id,file_name' });
-            if (error) throw error;
+            const chunk = rows.slice(i, i + UPSERT_CHUNK);
+            checkUser(uid);
+            const { error } = await upsert(chunk);
+            if (!error) continue;
+            if (!isRowError(error)) throw error;
+            // find the refused rows one by one and send the rest
+            for (const row of chunk) {
+                checkUser(uid);
+                const single = await upsert([row]);
+                if (!single.error) continue;
+                if (!isRowError(single.error)) throw single.error;
+                skipName(row.file_name, single.error.message);
+                refused.push(row.file_name);
+            }
         }
+        return refused;
     }
 
     function localSettings() {
@@ -505,13 +637,14 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
-    async function pushSettings(db, changedAt) {
+    async function pushSettings(db, uid, changedAt) {
         const { reader, channels } = localSettings();
+        checkUser(uid);
         const { error } = await db.from('user_settings').upsert({
-            user_id: user.id,
+            user_id: uid,
             reader,
             channels,
-            updated_at: toIso(changedAt || Date.now())
+            updated_at: toIso(changedAt)
         }, { onConflict: 'user_id' });
         if (error) throw error;
     }
@@ -536,6 +669,14 @@ document.addEventListener('DOMContentLoaded', () => {
         Object.entries(sent).forEach(([name, mark]) => {
             if (pending[name] === mark) delete pending[name];
         });
+        saveState({ pending });
+    }
+
+    // names the server can never store: retrying them would only fail again
+    function dropPending(names) {
+        if (!names.length) return;
+        const pending = Object.assign({}, loadState().pending);
+        names.forEach((name) => { delete pending[name]; });
         saveState({ pending });
     }
 
@@ -615,7 +756,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (useClock && !(capsFresh && state.caps.serverClock)) {
             saveState({ caps: { serverClock: true, checkedAt: Date.now() } });
         }
-        if (!user || user.id !== uid) return;
+        checkUser(uid);
 
         // from here to saveState: synchronous, so no local change can slip in between
         const st = loadState();
@@ -673,11 +814,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (foreignLocal) {
                 // the previous account's channel list must not move into this one
                 if (finder()) finder().setChannels([]);
-            } else {
+            } else if (firstSync) {
                 // nothing on the server yet: upload this device's settings
                 settingsPending = true;
                 if (!settingsChangedAt) settingsChangedAt = Date.now();
             }
+            // otherwise deleted on the server ("Delete my synced data"): kept here, sent only after a new change
         }
 
         saveState({
@@ -700,13 +842,27 @@ document.addEventListener('DOMContentLoaded', () => {
         if (state.userId !== uid) return; // the first merge for this account has not run yet
         const history = app().getHistory();
         const sent = Object.assign({}, state.pending);
+        // e.g. a Telegram file name longer than 512 characters: stays on this device
+        const invalid = Object.keys(sent).filter((name) => !validName(name));
+        invalid.forEach((name) => {
+            skipName(name, 'the file name cannot be stored on the server');
+            delete sent[name];
+        });
+        dropPending(invalid);
         const rows = Object.keys(sent)
             .filter((name) => history[name])
-            .map((name) => rowFromEntry(name, history[name]));
-        if (rows.length) await upsertProgress(db, rows);
+            .map((name) => rowFromEntry(uid, name, history[name]));
+        const refused = rows.length ? await upsertProgress(db, uid, rows) : [];
         if (Object.keys(sent).length) clearPending(sent);
+        dropPending(refused);
         if (state.settingsPending) {
-            await pushSettings(db, state.settingsChangedAt);
+            try {
+                await pushSettings(db, uid, state.settingsChangedAt);
+            } catch (err) {
+                if (!isRowError(err)) throw err;
+                // refused settings must not block the sync; the next settings change tries again
+                console.warn('Sync skips the settings the server refused:', err.message);
+            }
             if ((loadState().settingsChangedAt || 0) === (state.settingsChangedAt || 0)) {
                 saveState({ settingsPending: false });
             }
@@ -731,7 +887,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // reasons: signin, manual, flush, push, retry and the PULL_GAP keys
     function requestSync(reason, opts = {}) {
-        if (!user || !configured) return Promise.resolve();
+        if (!user || !configured || deleting) return Promise.resolve();
         if (isOffline()) {
             render();
             return running || Promise.resolve();
@@ -761,21 +917,21 @@ document.addEventListener('DOMContentLoaded', () => {
             const opts = queued;
             queued = null;
             try {
-                if (navigator.locks && navigator.locks.request) {
-                    // one cycle at a time across this browser's tabs
-                    await navigator.locks.request('comic-reader-sync', () => runCycle(opts));
-                } else {
-                    await runCycle(opts);
-                }
+                await withSyncLock(() => runCycle(opts));
             } catch (err) {
                 console.warn('Sync failed:', err);
             }
         }
     }
 
+    // one sync cycle (or the deletion of the synced data) at a time across this browser's tabs
+    function withSyncLock(fn) {
+        return navigator.locks && navigator.locks.request ? navigator.locks.request('comic-reader-sync', fn) : fn();
+    }
+
     // pull (when asked or needed), merge, then push what is pending
     async function runCycle(opts) {
-        if (!user || !configured) return;
+        if (!user || !configured || deleting) return;
         const uid = user.id;
         const state = loadState();
         const newHere = state.userId !== uid || !state.lastSyncAt;
@@ -784,8 +940,8 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const db = await getClient();
             if (opts.pull || newHere) await pullAndMerge(db, uid, opts);
-            if (!user || user.id !== uid) return;
             await pushPending(db, uid);
+            checkUser(uid);
             failures = 0;
             lastError = '';
             clearTimeout(retryTimer);
@@ -793,9 +949,12 @@ document.addEventListener('DOMContentLoaded', () => {
             saveState({ lastSyncAt: Date.now() });
             if (opts.manual) showMessage('Everything is in sync.', 'info');
         } catch (err) {
+            // the account changed or its data is being deleted: not a failure
+            if (err && err.code === ABORTED) return;
             failures += 1;
             lastError = err.message || String(err);
             console.warn('Sync failed:', err);
+            if (opts.manual) showMessage(lastError, 'error');
             scheduleRetry(opts);
         } finally {
             showSyncing = false;
@@ -859,6 +1018,14 @@ document.addEventListener('DOMContentLoaded', () => {
     function stopTicker() {
         clearInterval(ticker);
         ticker = null;
+    }
+
+    function stopTimers() {
+        clearTimeout(pushTimer);
+        pushTimer = null;
+        clearTimeout(retryTimer);
+        retryTimer = null;
+        stopTicker();
     }
 
     /* triggers */

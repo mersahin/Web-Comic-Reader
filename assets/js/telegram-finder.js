@@ -182,7 +182,8 @@ document.addEventListener('DOMContentLoaded', () => {
         els.channelCount.textContent = settings.channels.length ? `(${settings.channels.length})` : '';
     }
 
-    const normalizeChannels = (names) => unique(names).slice(0, 20);
+    const MAX_MY_CHANNELS = 50; // matches public.valid_channel_list
+    const normalizeChannels = (names) => unique(names).slice(0, MAX_MY_CHANNELS);
 
     // notify=false when the list came from sync, so it is not sent back
     function setChannels(names, notify = true) {
@@ -195,8 +196,14 @@ document.addEventListener('DOMContentLoaded', () => {
         if (changed && notify) document.dispatchEvent(new CustomEvent('comicreader:channels-changed'));
     }
 
+    // false when the list is full, so the caller keeps its button
     function addMyChannel(name) {
+        if (settings.channels.length >= MAX_MY_CHANNELS) {
+            showMessage(`My channels is full (${MAX_MY_CHANNELS}). Remove one first.`, 'error');
+            return false;
+        }
         setChannels([...settings.channels, name]);
+        return true;
     }
 
     // a list from sync waits while the user is typing in the textarea
@@ -218,7 +225,11 @@ document.addEventListener('DOMContentLoaded', () => {
     els.channelList.addEventListener('change', () => {
         // the user's own edit wins over a list that arrived while typing
         pendingChannels = null;
-        setChannels(els.channelList.value.split(/[\s,]+/).map(parseChannel).filter(Boolean));
+        const names = els.channelList.value.split(/[\s,]+/).map(parseChannel).filter(Boolean);
+        if (unique(names).length > MAX_MY_CHANNELS) {
+            showMessage(`My channels keeps the first ${MAX_MY_CHANNELS} channels; the rest were left out.`, 'error');
+        }
+        setChannels(names);
     });
 
     els.channelList.addEventListener('blur', () => {
@@ -930,8 +941,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 keep.className = 'link-btn link-btn-small';
                 keep.textContent = 'Add to my channels';
                 keep.addEventListener('click', () => {
-                    addMyChannel(channel.username);
-                    keep.remove();
+                    if (addMyChannel(channel.username)) keep.remove();
                 });
                 actions.appendChild(keep);
             }
