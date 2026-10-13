@@ -1,0 +1,118 @@
+name: Supabase keepalive
+
+# Free Supabase projects are paused after a week with too little database
+# activity ("a few user requests to the database each day" is enough):
+# https://supabase.com/docs/guides/platform/free-project-pausing
+# This workflow runs a tiny query as the anon role every day, using the same
+# public URL and publishable key the site uses (assets/js/sync-config.js).
+# It reads no user data: public.keepalive() only returns the database time.
+
+on:
+  schedule:
+    # Daily at 05:17 UTC; an odd minute avoids the busy start of the hour.
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: supabase-keepalive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    name: Ping Supabase
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: assets/js/sync-config.js
+          sparse-checkout-cone-mode: false
+
+      - name: Run a query as the anon role
+        env:
+          CONFIG: assets/js/sync-config.js
+          PINGS: 3
+        run: |
+          # Single source of truth: the config the site itself loads.
+          url=$(sed -nE "s/.*supabaseUrl:[[:space:]]*['\"]([^'\"]+)['\"].*/\1/p" "$CONFIG" | head -n 1)
+          key=$(sed -nE "s/.*supabaseAnonKey:[[:space:]]*['\"]([^'\"]+)['\"].*/\1/p" "$CONFIG" | head -n 1)
+          if ! [[ "$url" =~ ^https://[a-z0-9-]+\.supabase\.co$ ]] || [ -z "$key" ]; then
+              echo "::error file=$CONFIG::Could not read supabaseUrl and supabaseAnonKey"
+              exit 1
+          fi
+          # Only the public publishable key belongs in the repo, never a secret key.
+          if [[ "$key" == sb_secret_* ]]; then
+              echo "::error file=$CONFIG::supabaseAnonKey is a secret key: rotate it in Supabase and use the publishable key"
+              exit 1
+          fi
+
+          # POST /rest/v1/rpc/<function> runs the function in Postgres as anon.
+          # Sets $status; the response body ends up in body.json.
+          rpc() {
+              local attempt
+              for attempt in 1 2 3 4; do
+                  rm -f body.json
+                  status=$(curl -sS -o body.json -w '%{http_code}' --max-time 20 \
+                      -X POST "$url/rest/v1/rpc/$1" \
+                      -H "apikey: $key" \
+                      -H 'Content-Type: application/json' \
+                      -d "$2") || status=000
+                  case "$status" in
+                      2??) return 0 ;;
+                      540) return 1 ;;  # project paused, retrying will not help
+                      000|408|429|5??)
+                          echo "::warning::rpc/$1 attempt $attempt failed with HTTP $status"
+                          if [ "$attempt" -lt 4 ]; then sleep $((attempt * 10)); fi
+                          ;;
+                      *) return 1 ;;
+                  esac
+              done
+              return 1
+          }
+
+          for i in $(seq "$PINGS"); do
+              if rpc keepalive '{}'; then
+                  echo "Ping $i ok, database time: $(cat body.json)"
+              elif [ "$status" = 404 ] && rpc valid_channel_list '{"names":[]}'; then
+                  # Fallback until the public.keepalive() part of supabase/schema.sql has been run.
+                  echo "::warning::public.keepalive() not found, pinged valid_channel_list instead. Run supabase/schema.sql in the Supabase SQL editor."
+              else
+                  echo "::error::Supabase ping failed with HTTP $status: $(head -c 500 body.json 2>/dev/null)"
+                  if [ "$status" = 540 ]; then
+                      echo "::error::The Supabase project is paused. Resume it at https://supabase.com/dashboard and re-run this workflow."
+                  fi
+                  exit 1
+              fi
+              if [ "$i" -lt "$PINGS" ]; then sleep 5; fi
+          done
+
+  keep-schedule-enabled:
+    name: Keep this schedule enabled
+    # In public repos GitHub disables scheduled workflows after 60 days without
+    # repository activity. Re-enabling this workflow through the REST API keeps
+    # it active (same approach as liskin/gh-workflow-keepalive, no extra action).
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Re-enable this workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          workflow="${GITHUB_WORKFLOW_REF%%@*}"
+          workflow="${workflow##*/}"
+          for attempt in 1 2 3; do
+              if gh api --method PUT "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/enable"; then
+                  echo "Re-enabled $workflow"
+                  exit 0
+              fi
+              sleep $((attempt * 10))
+          done
+          echo "::error::Could not re-enable $workflow"
+          exit 1

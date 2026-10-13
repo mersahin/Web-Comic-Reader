@@ -1,7 +1,10 @@
 -- Web Comic Reader: per-user sync of reading progress and settings.
--- Run once in the Supabase SQL editor (Project > SQL Editor > New query).
+-- Run in the Supabase SQL editor (Project > SQL Editor > New query).
+-- The file is idempotent: running it again in full is safe.
+-- The block at the end was added later; projects set up before it must run
+-- that block (or the whole file) once.
 -- Every row belongs to one user; row level security lets each signed-in user
--- read and write only their own rows. Anonymous visitors get nothing.
+-- read and write only their own rows. Anonymous visitors get no data.
 
 -- Reading progress, one row per comic file name -----------------------------
 create table if not exists public.reading_progress (
@@ -54,3 +57,68 @@ create policy "own settings" on public.user_settings
 
 revoke all on public.reading_progress, public.user_settings from anon;
 grant select, insert, update, delete on public.reading_progress, public.user_settings to authenticated;
+
+-- ---------------------------------------------------------------------------
+-- Added 2026-10: keep-alive ping and safer automatic sync. Safe to run again.
+-- Run this block (or the whole file) once in the Supabase SQL editor.
+-- The site keeps working before it has been run.
+-- Owner: plan item 1 (keepalive-ci) appends this block; item 2 (auto-sync)
+-- uses server_updated_at and the trigger.
+-- ---------------------------------------------------------------------------
+
+-- Keep-alive for .github/workflows/supabase-keepalive.yml: free projects are
+-- paused after a week without database activity. The workflow calls this as
+-- anon once a day; it reads no table and returns only the database time.
+create or replace function public.keepalive()
+returns timestamptz
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+    select now()
+$$;
+
+revoke all on function public.keepalive() from public;
+grant execute on function public.keepalive() to anon, authenticated;
+
+-- Automatic sync: server_updated_at is the database time of a row's last
+-- change. The app pulls only rows changed since its last pull, so device
+-- clocks no longer decide what is fetched.
+alter table public.reading_progress add column if not exists server_updated_at timestamptz not null default now();
+alter table public.user_settings    add column if not exists server_updated_at timestamptz not null default now();
+create index if not exists reading_progress_user_server_updated on public.reading_progress (user_id, server_updated_at);
+
+-- Stamps server_updated_at, caps device clocks that run ahead, and keeps the
+-- newer row when a device with older data pushes: that row is skipped, the
+-- rest of the batch is still saved.
+create or replace function public.sync_stamp_row()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+    new.updated_at := least(new.updated_at, now() + interval '2 minutes');
+    if tg_op = 'UPDATE' and new.updated_at < old.updated_at then
+        return null;
+    end if;
+    new.server_updated_at := now();
+    return new;
+end;
+$$;
+
+drop trigger if exists sync_stamp_row on public.reading_progress;
+drop trigger if exists sync_stamp_row on public.user_settings;
+
+-- one-off: rows stored earlier by a device whose clock ran ahead
+-- (runs while the triggers are dropped, so it is not skipped by them)
+update public.reading_progress set updated_at = now() where updated_at > now() + interval '2 minutes';
+update public.user_settings    set updated_at = now() where updated_at > now() + interval '2 minutes';
+
+create trigger sync_stamp_row before insert or update on public.reading_progress
+    for each row execute function public.sync_stamp_row();
+create trigger sync_stamp_row before insert or update on public.user_settings
+    for each row execute function public.sync_stamp_row();
+
+-- let the Data API see the new function and columns right away
+notify pgrst, 'reload schema';

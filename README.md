@@ -82,13 +82,19 @@ The sign-in lasts until the tab is closed unless **Stay signed in on this device
 
 #### Setting it up (once, by the site owner)
 1. Create a free project at [supabase.com](https://supabase.com) in the **Central EU (Frankfurt)** region.
-2. Open **SQL Editor**, paste [`supabase/schema.sql`](supabase/schema.sql) and run it. It creates the tables and the row level security rules that let each user read and write only their own rows.
+2. Open **SQL Editor**, paste [`supabase/schema.sql`](supabase/schema.sql) and run it. It creates the tables and the row level security rules that let each user read and write only their own rows. Running the whole file again later is safe, for example after it was updated.
 3. **Authentication > URL Configuration**: set **Site URL** to `https://mersahin.github.io/Web-Comic-Reader/` and add the same address under **Redirect URLs** (used by confirmation and password reset emails).
 4. **Authentication > Sign In / Providers > Email**: keep Email enabled and **Confirm email** on.
 5. **Project Settings > API**: copy the **Project URL** and the **anon / publishable** key into [`assets/js/sync-config.js`](assets/js/sync-config.js), then commit and push. The anon key is meant to be public; the row level security rules protect the data. Never put the `service_role` key in the site.
 6. Optional: to keep the site for yourself, create your account first, then turn off **Allow new users to sign up** under Authentication.
 
-Free Supabase projects are paused after a week without activity and can be resumed from the dashboard.
+#### Keeping the free project awake
+Free Supabase projects are paused after a week without database activity. [`.github/workflows/supabase-keepalive.yml`](.github/workflows/supabase-keepalive.yml) prevents that: every day at 05:17 UTC it calls `public.keepalive()` as the anon role, using the Project URL and publishable key from `sync-config.js`. It needs no secrets and reads no user data.
+- Run the block at the end of `supabase/schema.sql` (or the whole file) once in the **SQL Editor**. Until then the job pings `valid_channel_list` instead and shows a warning.
+- Start it by hand under **Actions > Supabase keepalive > Run workflow**.
+- A second job re-enables the workflow on every run, so GitHub does not switch the schedule off after 60 days without repository activity.
+- GitHub emails failed runs to whoever created the workflow or last changed its schedule.
+- If the project was paused anyway, resume it in the Supabase dashboard.
 
 ### Keyboard Shortcuts (while reading)
 | Key | Action |
@@ -176,8 +182,9 @@ GitHub Pages serves over HTTPS, so Library Mode works on the live site.
 │           └── uncompress.js  # Archive extraction
 ├── tools/tg-finder/tg_finder.py # Optional local helper (web search)
 ├── tools/telegram-bundle/       # Build script for the GramJS bundle
-├── supabase/schema.sql          # Tables + row level security for sync
+├── supabase/schema.sql          # Tables, row level security, sync triggers, keepalive()
 ├── .github/workflows/pages.yml  # GitHub Pages deployment
+├── .github/workflows/supabase-keepalive.yml  # Daily ping that keeps the free Supabase project awake
 ├── README.md
 └── LICENSE
 ```
