@@ -76,7 +76,14 @@ cd tools/telegram-bundle && npm ci && npm run build
 ### Sync Across Devices
 Click **Sign in** in the bar at the bottom of the panel, create an account with email and password, confirm the email, then sign in on each device.
 
-What is synced: reading progress and Recently Read (file name, page, page count, last read), reader view settings, and the My channels list. Comic files, thumbnails and Telegram logins stay on each device. For each comic the most recently changed version wins.
+What is synced: reading progress and Recently Read (file name, page, page count, last read), reader view settings, and the My channels list. Comic files, thumbnails and Telegram logins stay on each device.
+
+Sync is automatic, there is nothing to press:
+- It checks for changes from other devices on sign-in, about every 30 to 60 seconds while the page is visible, when the tab or window gets focus again, when a comic is opened or closed, and when the network comes back.
+- Changes made on this device are sent within a few seconds (at least every 10 seconds while reading), and right away when the tab is hidden or closed.
+- For each comic the newest change wins. Once the SQL block at the end of `supabase/schema.sql` has been run, the server also keeps the newer row when a device with older data sends it, and only changed rows are fetched.
+- If the same comic is open on another device, the reader never jumps; it offers **Go to page N** instead. View settings from another device apply when the comic is closed.
+- The bar turns amber while offline or retrying and red after repeated failures. **Sync now** forces a full check.
 
 The sign-in lasts until the tab is closed unless **Stay signed in on this device** is ticked. **Delete my synced data** removes everything from the server and logs out; the device keeps its own copy.
 

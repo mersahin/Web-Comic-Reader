@@ -182,9 +182,11 @@ document.addEventListener('DOMContentLoaded', () => {
         els.channelCount.textContent = settings.channels.length ? `(${settings.channels.length})` : '';
     }
 
+    const normalizeChannels = (names) => unique(names).slice(0, 20);
+
     // notify=false when the list came from sync, so it is not sent back
     function setChannels(names, notify = true) {
-        const next = unique(names).slice(0, 20);
+        const next = normalizeChannels(names);
         const changed = next.join(',') !== settings.channels.join(',');
         settings.channels = next;
         els.channelList.value = next.map((c) => '@' + c).join('\n');
@@ -197,8 +199,32 @@ document.addEventListener('DOMContentLoaded', () => {
         setChannels([...settings.channels, name]);
     }
 
+    // a list from sync waits while the user is typing in the textarea
+    let pendingChannels = null;
+
+    function applyRemoteChannels(names) {
+        if (normalizeChannels(names).join(',') === settings.channels.join(',')) {
+            pendingChannels = null;
+            return;
+        }
+        if (document.activeElement === els.channelList) {
+            pendingChannels = names;
+            return;
+        }
+        pendingChannels = null;
+        setChannels(names, false);
+    }
+
     els.channelList.addEventListener('change', () => {
+        // the user's own edit wins over a list that arrived while typing
+        pendingChannels = null;
         setChannels(els.channelList.value.split(/[\s,]+/).map(parseChannel).filter(Boolean));
+    });
+
+    els.channelList.addEventListener('blur', () => {
+        setTimeout(() => {
+            if (pendingChannels) applyRemoteChannels(pendingChannels);
+        }, 0);
     });
 
     els.helperUrl.addEventListener('change', () => {
@@ -1180,7 +1206,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.TelegramFinder = {
         getChannels: () => [...settings.channels],
-        setChannels: (names) => setChannels(names, false),
+        setChannels: (names) => applyRemoteChannels(names),
         onShow() {
             refreshStatus();
             setTimeout(() => els.query.focus(), 50);

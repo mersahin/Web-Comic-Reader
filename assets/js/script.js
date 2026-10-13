@@ -64,10 +64,14 @@ document.addEventListener('DOMContentLoaded', () => {
     let viewBeforeSearch = 'initial';
     let viewBeforeAccount = 'initial';
     let dbPromise = null;
+    // sorted file names of the last library folder scan
+    let libraryFiles = [];
 
     const settings = loadSettings();
     let lastSavedSettings = JSON.stringify(settings);
     let applyingRemoteSettings = false;
+    // a view mode that arrived from sync while reading; applied when the reader closes
+    let pendingRemoteMode = null;
 
     // reader state; `token` invalidates async work of a previously opened comic
     const reader = {
@@ -83,6 +87,7 @@ document.addEventListener('DOMContentLoaded', () => {
         lastScrollY: 0,
         barHidden: false,
         toastTimer: null,
+        toastAction: null,
         scrollRaf: 0
     };
 
@@ -222,6 +227,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (clearRecentBtn) {
         clearRecentBtn.addEventListener('click', async () => {
             if (!confirm('Clear the Recently Read list?\nYour reading progress is kept.')) return;
+            // fetch other devices' progress first, so the hidden flags go out on top of it
+            await window.CloudSync?.pullNow?.();
             hideFromRecent(null);
             await loadRecentComics();
         });
@@ -409,27 +416,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            allComicsListEl.innerHTML = '';
+            comics.sort(pageNameCollator.compare);
+            libraryFiles = comics;
 
             if (comics.length === 0) {
                 allComicsListEl.innerHTML = '<div style="text-align: center; color: var(--muted); padding: 20px; font-size: 14px;">No comics found in this folder. Make sure your comics have .cbr, .cbz, or .cbt extension.</div>';
                 return;
             }
 
-            comics.sort(pageNameCollator.compare);
-
-            // get reading history for thumbnails
-            const readingHistory = readHistory();
-
-            for (const filename of comics) {
-                const data = readingHistory[filename];
-                const progress = data ? progressInfo(data) : null;
-                const item = createComicItem(filename, data, progress?.label, progress?.ratio);
-                item.addEventListener('click', () => openComicFromFolder(filename));
-                allComicsListEl.appendChild(item);
-            }
+            renderAllComics();
         } catch (err) {
             console.error('Failed to load all comics:', err);
+            libraryFiles = [];
 
             if (err.name === 'NotFoundError') {
                 const folderName = comicsDirectoryHandle ? comicsDirectoryHandle.name : 'directory';
@@ -468,6 +466,20 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 allComicsListEl.innerHTML = '<div style="text-align: center; color: var(--muted); padding: 20px; font-size: 14px;">Error loading comics from folder</div>';
             }
+        }
+    }
+
+    // renders "All Comics" from the last folder scan and the current history, without rescanning
+    function renderAllComics() {
+        if (libraryFiles.length === 0) return;
+        const readingHistory = readHistory();
+        allComicsListEl.innerHTML = '';
+        for (const filename of libraryFiles) {
+            const data = readingHistory[filename];
+            const progress = data ? progressInfo(data) : null;
+            const item = createComicItem(filename, data, progress?.label, progress?.ratio);
+            item.addEventListener('click', () => openComicFromFolder(filename));
+            allComicsListEl.appendChild(item);
         }
     }
 
@@ -550,6 +562,7 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.open = true;
         reader.filename = file.name;
         reader.source = options.source || 'upload';
+        document.dispatchEvent(new CustomEvent('comicreader:reader-opened', { detail: { filename: file.name } }));
         if (reopenNoticeEl) reopenNoticeEl.hidden = true;
         if (reader.source !== 'folder') {
             // library files can be reopened from the folder; everything else gets a local copy
@@ -720,7 +733,18 @@ document.addEventListener('DOMContentLoaded', () => {
             document.exitFullscreen().catch(() => {});
         }
         window.scrollTo(0, 0);
+        if (pendingRemoteMode) {
+            applyingRemoteSettings = true;
+            try {
+                settings.mode = pendingRemoteMode;
+                saveSettings();
+            } finally {
+                applyingRemoteSettings = false;
+                pendingRemoteMode = null;
+            }
+        }
         await showPanel();
+        document.dispatchEvent(new CustomEvent('comicreader:reader-closed'));
     }
 
     async function restorePosition(token) {
@@ -827,6 +851,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function setCurrentPage(index) {
         if (index === reader.current) return;
         reader.current = index;
+        // a "read on another device" offer is moot once the reader moves on
+        if (reader.toastAction) hideToast();
         updatePageIndicator();
         scheduleSave();
     }
@@ -898,6 +924,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function toggleMode() {
+        pendingRemoteMode = null;
         applyMode(settings.mode === 'strip' ? 'grid' : 'strip');
     }
 
@@ -940,8 +967,11 @@ document.addEventListener('DOMContentLoaded', () => {
         readerBarEl.classList.add('rb-hidden');
     }
 
-    function showToast(text) {
+    // `action` = { label, run } replaces the default "Start over" button
+    function showToast(text, action = null) {
         resumeToastTextEl.textContent = text;
+        resumeStartOverBtn.textContent = action ? action.label : 'Start over';
+        reader.toastAction = action;
         resumeToastEl.hidden = false;
         clearTimeout(reader.toastTimer);
         reader.toastTimer = setTimeout(hideToast, 6000);
@@ -949,7 +979,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function hideToast() {
         clearTimeout(reader.toastTimer);
+        reader.toastAction = null;
         resumeToastEl.hidden = true;
+    }
+
+    function jumpToPage(index) {
+        if (settings.mode === 'strip') {
+            goToPage(index);
+        } else if (reader.pages[index]) {
+            markLastRead(index);
+            setCurrentPage(index);
+            reader.pages[index].scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        showBar();
     }
 
     /* grid mode gallery (lightGallery v1 does not return an instance) */
@@ -1020,11 +1062,17 @@ document.addEventListener('DOMContentLoaded', () => {
     readerFullscreenBtn.addEventListener('click', toggleFullscreen);
     modeButtons.forEach((btn) => {
         btn.addEventListener('click', () => {
+            pendingRemoteMode = null;
             if (btn.dataset.mode !== settings.mode) applyMode(btn.dataset.mode);
         });
     });
     resumeStartOverBtn.addEventListener('click', () => {
+        const action = reader.toastAction;
         hideToast();
+        if (action) {
+            action.run();
+            return;
+        }
         if (settings.mode === 'strip') {
             window.scrollTo({ top: 0, behavior: 'auto' });
         } else {
@@ -1037,6 +1085,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.addEventListener('fullscreenchange', () => {
         readerFullscreenBtn.classList.toggle('active', Boolean(document.fullscreenElement));
+    });
+
+    // write the pending page before the tab is hidden or closed (registered before cloud-sync.js pushes)
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') flushSave();
+    });
+    window.addEventListener('pagehide', flushSave);
+
+    // another tab changed the history (or pulled it from sync)
+    window.addEventListener('storage', (event) => {
+        if (event.key !== HISTORY_KEY || reader.open) return;
+        loadRecentComics();
+        if (currentView === 'library') renderAllComics();
     });
 
     window.addEventListener('scroll', () => {
@@ -1168,14 +1229,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // notify=false is used when the change came from sync, so it is not sent back
-    function writeHistory(history, notify = true) {
+    // notify=false is used when the change came from sync (or changed nothing), so it is not sent back;
+    // `names` lists the changed entries
+    function writeHistory(history, notify = true, names = null) {
         try {
             localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
         } catch (e) {
             console.error('Failed to save reading history:', e);
         }
-        if (notify) document.dispatchEvent(new CustomEvent('comicreader:history-changed'));
+        if (notify) document.dispatchEvent(new CustomEvent('comicreader:history-changed', { detail: { names } }));
     }
 
     function generateThumbnail(token) {
@@ -1195,9 +1257,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                 const thumbnail = canvas.toDataURL('image/jpeg', 0.7);
 
-                // keep the stored last_page; only the thumbnail is new
-                const existing = readHistory()[reader.filename] || {};
-                saveLastPageRead(reader.filename, existing.last_page || 0, thumbnail);
+                setThumbnail(reader.filename, thumbnail);
             } catch (e) {
                 console.error('Failed to create thumbnail:', e);
             }
@@ -1216,21 +1276,42 @@ document.addEventListener('DOMContentLoaded', () => {
      * timestamp = last read (list order), updated_at = last change (sync merge).
      * Kept behind readHistory/writeHistory/saveLastPageRead so a synced store can replace it later.
      */
-    function saveLastPageRead(filename, pageIndex, thumbnail = null) {
+    function saveLastPageRead(filename, pageIndex) {
         const readingHistory = readHistory();
         const existing = readingHistory[filename] || {};
         const isOpen = reader.open && filename === reader.filename;
+        const newTotal = (isOpen && reader.pages.length) ? reader.pages.length : null;
+        const source = isOpen ? reader.source : (existing.source || null);
+        // only a real change gets a new updated_at, so reopening a comic never outdates newer progress
+        const changed = !existing.updated_at
+            || existing.last_page !== pageIndex
+            || Boolean(existing.hidden_from_recent)
+            || Boolean(newTotal && existing.total_pages !== newTotal);
+        const now = Date.now();
 
         // reading a comic again brings it back into "Recently Read" (no hidden flag)
-        readingHistory[filename] = {
+        const entry = {
+            ...existing,
             last_page: pageIndex,
-            total_pages: (isOpen && reader.pages.length) ? reader.pages.length : (existing.total_pages || null),
-            source: isOpen ? reader.source : (existing.source || null),
-            timestamp: Date.now(),
-            updated_at: Date.now(),
-            thumbnail: thumbnail || existing.thumbnail || null
+            total_pages: newTotal || existing.total_pages || null,
+            source,
+            timestamp: now,
+            updated_at: changed ? now : existing.updated_at,
+            thumbnail: existing.thumbnail || null
         };
-        writeHistory(readingHistory);
+        delete entry.hidden_from_recent;
+        readingHistory[filename] = entry;
+        writeHistory(readingHistory, changed, [filename]);
+    }
+
+    // thumbnails stay on this device, so storing one is not a change to sync
+    function setThumbnail(filename, dataUrl) {
+        const readingHistory = readHistory();
+        const existing = readingHistory[filename];
+        readingHistory[filename] = existing
+            ? { ...existing, thumbnail: dataUrl }
+            : { last_page: 0, total_pages: null, source: null, timestamp: Date.now(), thumbnail: dataUrl };
+        writeHistory(readingHistory, false);
     }
 
     function progressInfo(data) {
@@ -1250,13 +1331,12 @@ document.addEventListener('DOMContentLoaded', () => {
     function hideFromRecent(filename) {
         const readingHistory = readHistory();
         const names = filename === null ? Object.keys(readingHistory) : [filename];
-        names.forEach((name) => {
-            if (readingHistory[name]) {
-                readingHistory[name].hidden_from_recent = true;
-                readingHistory[name].updated_at = Date.now();
-            }
+        const changed = names.filter((name) => readingHistory[name] && !readingHistory[name].hidden_from_recent);
+        changed.forEach((name) => {
+            readingHistory[name].hidden_from_recent = true;
+            readingHistory[name].updated_at = Date.now();
         });
-        writeHistory(readingHistory);
+        if (changed.length) writeHistory(readingHistory, true, changed);
         // the list entry is gone, so its offline copy is no longer needed
         deleteCachedComics(names);
     }
@@ -1410,6 +1490,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 removeBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
                 removeBtn.addEventListener('click', async (event) => {
                     event.stopPropagation();
+                    await window.CloudSync?.pullNow?.();
                     hideFromRecent(filename);
                     await loadRecentComics();
                 });
@@ -1477,6 +1558,28 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // history merged by cloud-sync.js; `changedNames` are the entries that differ from before
+    function applyRemoteHistory(history, changedNames = []) {
+        changedNames = changedNames || [];
+        writeHistory(history, false);
+        if (!reader.open) {
+            if (changedNames.length) {
+                loadRecentComics();
+                if (currentView === 'library') renderAllComics();
+            }
+            return;
+        }
+        // the lists are re-rendered when the reader closes; never move the open comic
+        const remote = history[reader.filename];
+        if (!reader.tracking || !remote || !changedNames.includes(reader.filename)) return;
+        const page = Math.max(0, Math.min(remote.last_page | 0, reader.pages.length - 1));
+        if (page === reader.current) return;
+        showToast(`Read to page ${page + 1} on another device`, {
+            label: `Go to page ${page + 1}`,
+            run: () => jumpToPage(page)
+        });
+    }
+
     function formatTimestamp(timestamp) {
         const now = Date.now();
         const diff = now - timestamp;
@@ -1508,22 +1611,31 @@ document.addEventListener('DOMContentLoaded', () => {
         // used by cloud-sync.js
         showAccount: showAccountView,
         getHistory: readHistory,
-        replaceHistory(history) {
-            writeHistory(history, false);
-            loadRecentComics();
-        },
+        applyRemoteHistory,
+        replaceHistory: (history) => applyRemoteHistory(history, Object.keys(history)),
         getReaderSettings() {
-            return { mode: settings.mode, width: settings.width };
+            return { mode: pendingRemoteMode || settings.mode, width: settings.width };
         },
         applyReaderSettings(remote) {
             if (!remote) return;
+            const width = STRIP_WIDTHS.some((w) => w.key === remote.width) ? remote.width : settings.width;
+            const mode = remote.mode === 'grid' || remote.mode === 'strip' ? remote.mode : settings.mode;
+            if (mode === settings.mode) pendingRemoteMode = null;
+            if (width === settings.width && mode === settings.mode) return;
             applyingRemoteSettings = true;
             try {
-                if (STRIP_WIDTHS.some((w) => w.key === remote.width)) settings.width = remote.width;
-                const mode = remote.mode === 'grid' || remote.mode === 'strip' ? remote.mode : settings.mode;
                 if (reader.open) {
-                    applyMode(mode);
+                    // never switch the mode under an open comic; the width keeps the page in place
+                    if (width !== settings.width) {
+                        preservePosition(() => {
+                            settings.width = width;
+                            saveSettings();
+                            applyWidth();
+                        });
+                    }
+                    if (mode !== settings.mode) pendingRemoteMode = mode;
                 } else {
+                    settings.width = width;
                     settings.mode = mode;
                     saveSettings();
                 }
