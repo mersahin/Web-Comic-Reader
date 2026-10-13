@@ -278,7 +278,7 @@
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"/></svg>
         </button>
         <div id="readerTitle" class="rb-title"></div>
-        <div id="readerPage" class="rb-page" aria-live="polite">0 / 0</div>
+        <button type="button" id="readerPage" class="rb-page" aria-haspopup="dialog" aria-expanded="false" aria-controls="pageJump" title="Go to page (G)">0 / 0</button>
         <div class="rb-group" role="group" aria-label="View mode">
             <button id="modeStripBtn" class="rb-btn" data-mode="strip" title="Continuous scroll (M)" aria-label="Continuous scroll view">
                 <svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="1" width="8" height="6.5" rx="1"/><rect x="4" y="8.5" width="8" height="6.5" rx="1"/></svg>
@@ -292,6 +292,16 @@
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 5.5v-4h4M10.5 1.5h4v4M14.5 10.5v4h-4M5.5 14.5h-4v-4"/></svg>
         </button>
     </header>
+
+    <div id="pageJump" class="page-jump" role="dialog" aria-label="Go to page" hidden>
+        <input id="pageJumpRange" class="page-jump-range" type="range" min="1" max="1" step="1" value="1" aria-label="Page slider">
+        <div class="page-jump-row">
+            <label for="pageJumpNumber" class="page-jump-label">Page</label>
+            <input id="pageJumpNumber" class="page-jump-number" type="number" min="1" max="1" step="1" value="1" inputmode="numeric" enterkeyhint="go">
+            <span id="pageJumpTotal" class="page-jump-total">of 0</span>
+            <button type="button" id="pageJumpGo" class="page-jump-go">Go</button>
+        </div>
+    </div>
 
     <div id="output"></div>
 

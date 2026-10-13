@@ -13,6 +13,8 @@ Modern web-based comic book reader for CBR, CBZ, and CBT files with library mana
 - **Grid + Gallery Mode** - Thumbnail grid with lightGallery zoom, rotate and fullscreen; switch any time without losing your page
 - **Adjustable Page Width** - Narrow, medium, wide or full width in scroll mode
 - **Auto-hiding Toolbar** - Page counter, progress bar, view switch and fullscreen; hides while you read down
+- **Go to Page** - Click the page counter (or press `G`) for a page slider and a page number field; `Enter` or **Go** jumps there
+- **Next Issue** - At the end of a comic from your library folder (in both views), a **Next** button with the name and saved progress of the following file opens it, in the same order as the library list; `[` and `]` open the previous and next comic
 - **Resume Reading** - Jumps back to the exact page you left, with a one-click "Start over"
 - **Stays in Place** - Rotating the phone, resizing the window or switching fullscreen keeps your spot in scroll mode. The screen stays on while a comic is open, until 10 minutes pass without turning a page or scrolling (in browsers with the Screen Wake Lock API)
 - **Fast Opening** - The comic shows as soon as the pages up to your saved page are extracted; the rest loads in the background (percentage next to the page counter). **Cancel** on the loading screen (or `Esc`) closes it
@@ -115,7 +117,9 @@ Free Supabase projects are paused after a week without database activity. [`.git
 | `M` | Switch between scroll and grid view |
 | `W` / `Shift+W` | Cycle page width (scroll mode) |
 | `F` | Toggle fullscreen |
-| `Esc` | Close the comic (also while it is still loading) |
+| `G` | Go to page: opens the page slider and number field under the toolbar (`Enter` jumps, `Esc` closes it) |
+| `[` / `]` | Previous / next comic in the library folder (comics opened from the folder) |
+| `Esc` | Close the go-to-page panel when it is open, otherwise close the comic (also while it is still loading) |
 | Browser or phone **Back** | Close the comic and stay on the site (in grid view an enlarged page is closed first) |
 
 ## Getting Started (Development)

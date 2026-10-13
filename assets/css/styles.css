@@ -648,11 +648,8 @@ body.reader-strip {
     background-clip: content-box;
 }
 
+/* end of comic: after the strip, or below the thumbnails in grid mode */
 .strip-end {
-    display: none;
-}
-
-#output.mode-strip .strip-end {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -661,6 +658,11 @@ body.reader-strip {
     line-height: normal;
     font-size: 15px;
     color: #9ca3af;
+}
+
+#output.mode-grid .strip-end {
+    padding: 32px 16px 16px;
+    color: var(--muted);
 }
 
 .strip-end-title {
@@ -674,6 +676,25 @@ body.reader-strip {
     margin: 0;
     padding: 12px 24px;
     justify-content: center;
+}
+
+/* "Next: <file name>": long names wrap instead of widening the button */
+.strip-end-next {
+    max-width: min(100%, 520px);
+    text-align: center;
+}
+
+.strip-end-next .btn-title {
+    overflow-wrap: anywhere;
+}
+
+/* the reader background is always dark in scroll mode */
+#output.mode-strip .strip-end-back {
+    color: #93b4ff;
+}
+
+#output.mode-strip .strip-end-back:hover {
+    background: rgba(147, 180, 255, .12);
 }
 
 .reader-error {
@@ -725,12 +746,108 @@ body.reader-strip {
     padding: 0 6px;
 }
 
+/* page counter, a button that opens the go-to-page panel */
 .rb-page {
     flex-shrink: 0;
-    font-size: 13px;
-    font-variant-numeric: tabular-nums;
-    color: #9ca3af;
+    height: 32px;
     padding: 0 8px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: #9ca3af;
+    font: 500 13px/1 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+}
+
+.rb-page:hover,
+.rb-page[aria-expanded="true"] {
+    background: rgba(255, 255, 255, .1);
+    color: #e5e7eb;
+}
+
+.rb-page:focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 1px;
+}
+
+/* go-to-page panel, hanging below the toolbar */
+.page-jump {
+    position: fixed;
+    top: calc(var(--reader-bar-height) + env(safe-area-inset-top) + 6px);
+    right: max(10px, env(safe-area-inset-right));
+    z-index: 1002;
+    width: min(340px, calc(100vw - 32px));
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px;
+    border-radius: 12px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+    color: var(--text);
+    font-size: 14px;
+}
+
+.page-jump-range {
+    width: 100%;
+    margin: 0;
+    accent-color: var(--brand);
+    cursor: pointer;
+}
+
+.page-jump-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.page-jump-label,
+.page-jump-total {
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+.page-jump-number {
+    width: 5.5em;
+    min-width: 0;
+    padding: 7px 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+    font-variant-numeric: tabular-nums;
+}
+
+.page-jump-number:focus {
+    outline: 2px solid var(--brand);
+    outline-offset: 0;
+    border-color: var(--brand);
+}
+
+.page-jump-go {
+    margin-left: auto;
+    padding: 8px 16px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--brand);
+    color: #fff;
+    font: 600 14px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    cursor: pointer;
+}
+
+.page-jump-go:hover {
+    background: #1d4ed8;
+}
+
+.page-jump-go:focus-visible,
+.page-jump-range:focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
 }
 
 .rb-group {
@@ -843,9 +960,21 @@ body.reader-strip {
         padding: 0 4px;
     }
 
+    .page-jump {
+        right: max(16px, env(safe-area-inset-right));
+    }
+
     .footer-credit {
         display: block;
         margin-top: 4px;
+    }
+}
+
+/* phones and tablets: below 16px iOS zooms the page in when the field gets the focus */
+@media only screen and (max-width: 700px), (pointer: coarse) {
+    .page-jump-number,
+    .page-jump-go {
+        font-size: 16px;
     }
 }
 

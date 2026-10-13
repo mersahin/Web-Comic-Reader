@@ -34,6 +34,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const readerBarEl = document.getElementById('readerBar');
     const readerTitleEl = document.getElementById('readerTitle');
     const readerPageEl = document.getElementById('readerPage');
+    const pageJumpEl = document.getElementById('pageJump');
+    const pageJumpRangeEl = document.getElementById('pageJumpRange');
+    const pageJumpNumberEl = document.getElementById('pageJumpNumber');
+    const pageJumpTotalEl = document.getElementById('pageJumpTotal');
+    const pageJumpGoBtn = document.getElementById('pageJumpGo');
     const readerCloseBtn = document.getElementById('readerCloseBtn');
     const modeButtons = document.querySelectorAll('#readerBar [data-mode]');
     const readerWidthBtn = document.getElementById('readerWidthBtn');
@@ -124,6 +129,8 @@ document.addEventListener('DOMContentLoaded', () => {
         anchor: null,
         // a Close is waiting for history.back() to reach popstate
         closing: false,
+        // counts go-to-page requests, so a jump still waiting for its page gives way to a newer one
+        jumpRequest: 0,
         wakeLock: null,
         wakeLockPending: false,
         wakeTimer: null
@@ -894,16 +901,61 @@ document.addEventListener('DOMContentLoaded', () => {
         return IMAGE_EXTENSIONS.has(getExt(base).toLowerCase());
     }
 
+    // shown after the last page in both view modes; a comic from the library folder offers the next file
     function createStripEnd() {
         const end = document.createElement('div');
         end.className = 'strip-end';
         end.innerHTML = '<div class="strip-end-title">End of comic</div>';
+
+        const next = libraryNeighbour(1);
+        if (next) {
+            const nextBtn = document.createElement('button');
+            nextBtn.type = 'button';
+            nextBtn.className = 'folder-btn folder-btn-primary strip-end-btn strip-end-next';
+            nextBtn.title = 'Next comic in the folder (])';
+            const text = document.createElement('div');
+            const title = document.createElement('div');
+            title.className = 'btn-title';
+            title.textContent = `Next: ${next}`;
+            text.appendChild(title);
+            const data = readHistory()[next];
+            if (data) {
+                const meta = document.createElement('div');
+                meta.className = 'btn-subtitle';
+                meta.textContent = progressInfo(data).label;
+                text.appendChild(meta);
+            }
+            nextBtn.appendChild(text);
+            nextBtn.addEventListener('click', () => openComicFromFolder(next));
+            end.appendChild(nextBtn);
+        }
+
         const closeBtn = document.createElement('button');
-        closeBtn.className = 'folder-btn folder-btn-primary strip-end-btn';
+        closeBtn.type = 'button';
+        closeBtn.className = next ? 'link-btn strip-end-back' : 'folder-btn folder-btn-primary strip-end-btn';
         closeBtn.textContent = currentView === 'library' ? 'Back to library' : 'Close';
         closeBtn.addEventListener('click', requestClose);
         end.appendChild(closeBtn);
         return end;
+    }
+
+    // the file before (-1) or after (1) the open comic in the last library folder scan, when it was opened from there
+    function libraryNeighbour(step) {
+        if (!reader.open || reader.source !== 'folder' || !comicsDirectoryHandle) return null;
+        const index = libraryFiles.indexOf(reader.filename);
+        if (index === -1) return null;
+        return libraryFiles[index + step] || null;
+    }
+
+    // '[' and ']': the previous or next comic of the library folder
+    function openNeighbourComic(step) {
+        if (reader.source !== 'folder') return;
+        const name = libraryNeighbour(step);
+        if (name) {
+            openComicFromFolder(name);
+        } else if (comicsDirectoryHandle && libraryFiles.includes(reader.filename)) {
+            showToast(step > 0 ? 'This is the last comic in the folder' : 'This is the first comic in the folder', false);
+        }
     }
 
     function showReaderError(err) {
@@ -933,6 +985,7 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.tracking = false;
         reader.anchor = null;
         reader.closing = false;
+        closePageJump();
         outputElement.innerHTML = '';
         hideToast();
     }
@@ -1286,7 +1339,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function hideBar() {
-        if (settings.mode !== 'strip') return;
+        // the go-to-page panel hangs below the toolbar, so the toolbar stays while it is open
+        if (settings.mode !== 'strip' || !pageJumpEl.hidden) return;
         reader.barHidden = true;
         readerBarEl.classList.add('rb-hidden');
     }
@@ -1308,15 +1362,97 @@ document.addEventListener('DOMContentLoaded', () => {
         resumeToastEl.hidden = true;
     }
 
-    function jumpToPage(index) {
-        if (settings.mode === 'strip') {
-            goToPage(index);
-        } else if (reader.pages[index]) {
-            markLastRead(index);
-            setCurrentPage(index);
-            reader.pages[index].scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
+    // a far jump (go-to-page panel, "Go to page N" from sync). In strip mode it waits, like restorePosition,
+    // until every page up to the target is extracted and has its real height, so it lands on the right page
+    async function jumpToPage(index) {
+        if (!reader.pages[index]) return;
+        const token = reader.token;
+        const request = ++reader.jumpRequest;
         showBar();
+        if (settings.mode !== 'strip') {
+            markLastRead(index);
+            reader.pages[index].scrollIntoView({ block: 'center' });
+            setCurrentPage(index);
+            updateProgress();
+            return;
+        }
+
+        let waitText = '';
+        if (reader.loading && reader.loading.done <= index) {
+            waitText = `Loading page ${index + 1}…`;
+            showToast(waitText, false);
+            await waitForExtraction(index, token);
+        }
+        await waitForImages(reader.pages.slice(0, index + 1));
+        if (waitText && resumeToastTextEl.textContent === waitText) hideToast();
+        // closed, switched to another comic or mode, or a newer jump was asked for meanwhile
+        if (token !== reader.token || request !== reader.jumpRequest || settings.mode !== 'strip') return;
+        goToPage(index);
+        // a jump, not reading on: the toolbar stays as it is
+        reader.lastScrollY = window.scrollY;
+        setCurrentPage(index);
+        updateProgress();
+    }
+
+    // resolves once page `index` is extracted, or when the comic is closed or switched
+    function waitForExtraction(index, token) {
+        return new Promise((resolve) => {
+            const check = () => {
+                if (token !== reader.token || !reader.loading || reader.loading.done > index) {
+                    resolve();
+                } else {
+                    setTimeout(check, 100);
+                }
+            };
+            check();
+        });
+    }
+
+    /* go-to-page panel: opened from the page counter or with G */
+
+    function togglePageJump() {
+        if (pageJumpEl.hidden) openPageJump(); else closePageJump(true);
+    }
+
+    function openPageJump() {
+        // not before the resume jump has settled, which would move the page again
+        if (!reader.open || !reader.tracking || reader.pages.length === 0) return;
+        const total = reader.pages.length;
+        const value = String(reader.current + 1);
+        [pageJumpRangeEl, pageJumpNumberEl].forEach((input) => {
+            input.max = String(total);
+            input.value = value;
+        });
+        pageJumpTotalEl.textContent = `of ${total}`;
+        pageJumpEl.hidden = false;
+        readerPageEl.setAttribute('aria-expanded', 'true');
+        showBar();
+        pageJumpNumberEl.focus();
+        pageJumpNumberEl.select();
+    }
+
+    // `returnFocus` puts the focus back on the page counter (Escape, or the counter clicked again);
+    // otherwise it leaves the panel, so Space and the arrow keys scroll the comic again
+    function closePageJump(returnFocus = false) {
+        if (pageJumpEl.hidden) return;
+        const active = document.activeElement;
+        if (!returnFocus && active && pageJumpEl.contains(active)) active.blur();
+        pageJumpEl.hidden = true;
+        readerPageEl.setAttribute('aria-expanded', 'false');
+        if (returnFocus) readerPageEl.focus();
+    }
+
+    // `input` is the field whose value is used (the range when Enter was pressed on it)
+    function jumpFromPanel(input = pageJumpNumberEl) {
+        const total = reader.pages.length;
+        const number = parseInt(input.value, 10);
+        if (!total || !Number.isFinite(number)) {
+            pageJumpNumberEl.focus();
+            pageJumpNumberEl.select();
+            return;
+        }
+        closePageJump();
+        jumpToPage(Math.max(1, Math.min(number, total)) - 1);
     }
 
     /* grid mode gallery (lightGallery v1 does not return an instance) */
@@ -1393,6 +1529,28 @@ document.addEventListener('DOMContentLoaded', () => {
     readerCloseBtn.addEventListener('click', requestClose);
     // the loading overlay covers the reader bar, so it has its own way out
     if (loadingCancelBtn) loadingCancelBtn.addEventListener('click', requestClose);
+
+    readerPageEl.addEventListener('click', togglePageJump);
+    pageJumpGoBtn.addEventListener('click', () => jumpFromPanel());
+    // the slider and the number field show the same page
+    pageJumpRangeEl.addEventListener('input', () => {
+        pageJumpNumberEl.value = pageJumpRangeEl.value;
+    });
+    pageJumpNumberEl.addEventListener('input', () => {
+        const number = parseInt(pageJumpNumberEl.value, 10);
+        if (Number.isFinite(number)) pageJumpRangeEl.value = String(number);
+    });
+    pageJumpEl.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' || (event.target !== pageJumpNumberEl && event.target !== pageJumpRangeEl)) return;
+        event.preventDefault();
+        jumpFromPanel(event.target);
+    });
+    // a click anywhere else closes the panel; it bubbles here after the strip's tap handler,
+    // so that tap leaves the toolbar alone (hideBar does nothing while the panel is open)
+    document.addEventListener('click', (event) => {
+        if (pageJumpEl.hidden || pageJumpEl.contains(event.target) || readerPageEl.contains(event.target)) return;
+        closePageJump();
+    });
 
     // browser or phone Back while reading: closes the enlarged gallery page first, then the comic.
     // After a reload while reading, the entry still says `reader`; openComic then reuses it
@@ -1503,11 +1661,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.addEventListener('keydown', (event) => {
         if (!reader.open || document.body.classList.contains('lg-on')) return;
-        if (event.altKey || event.ctrlKey || event.metaKey) return;
+        // Escape closes the go-to-page panel (also from its fields) before it would close the comic
+        if (event.key === 'Escape' && !pageJumpEl.hidden) {
+            event.preventDefault();
+            closePageJump(true);
+            return;
+        }
         if (event.target.closest && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+
+        // [ and ] need AltGr or Option on many layouts (German, French, Mac), so only Ctrl or Cmd
+        // shortcuts are left to the browser here
+        if (event.key === '[' || event.key === ']') {
+            const altGr = event.getModifierState('AltGraph') || (event.ctrlKey && event.altKey);
+            if (event.metaKey || (event.ctrlKey && !altGr) || reader.source !== 'folder') return;
+            event.preventDefault();
+            // holding the key down would open one comic after the other
+            if (!event.repeat) openNeighbourComic(event.key === ']' ? 1 : -1);
+            return;
+        }
+        if (event.altKey || event.ctrlKey || event.metaKey) return;
 
         const strip = settings.mode === 'strip';
         switch (event.key) {
+            case 'g':
+            case 'G':
+                // keeps the key from being typed into the number field that gets the focus
+                event.preventDefault();
+                togglePageJump();
+                break;
             case 'ArrowRight':
             case 'd':
             case 'n':
@@ -2032,7 +2213,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 // try to request permission
                 const newPermission = await comicsDirectoryHandle.requestPermission({ mode: 'read' });
                 if (newPermission !== 'granted') {
-                    showReconnectButton();
+                    // from inside the reader (next/previous comic) the open comic just stays open
+                    if (reader.open) showToast('No access to the comics folder', false); else showReconnectButton();
                     return;
                 }
             }
@@ -2042,7 +2224,9 @@ document.addEventListener('DOMContentLoaded', () => {
             openComic(file, { source: 'folder' });
         } catch (err) {
             console.error('Failed to open comic:', err);
-            if (err.name === 'NotAllowedError') {
+            if (reader.open) {
+                showToast(`Could not open "${filename}"`, false);
+            } else if (err.name === 'NotAllowedError') {
                 showReconnectButton();
             } else {
                 // keep the history entry: the file may come back or be selected manually
