@@ -655,7 +655,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const hasPending = (state) => Object.keys(state.pending || {}).length > 0 || Boolean(state.settingsPending);
 
     function pendingAge(state) {
-        const marks = Object.values(state.pending || {});
+        // mark 1 = a comic opened but never read (stamped just after 1970 so it loses every merge): not late
+        const marks = Object.values(state.pending || {}).filter((mark) => mark > 1);
         if (state.settingsPending) marks.push(state.settingsChangedAt || Date.now());
         return marks.length ? Date.now() - Math.min(...marks) : 0;
     }

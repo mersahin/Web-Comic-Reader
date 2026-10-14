@@ -1371,7 +1371,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const index = reader.current;
         // recorded again by the next strip scroll
         reader.anchor = null;
-        if (mode === 'strip') destroyGallery();
+        if (mode === 'strip') {
+            destroyGallery();
+        } else {
+            // a strip jump still waiting for its page is dropped, with its "Loading page N…" toast
+            reader.jumpRequest++;
+            clearJumpToast();
+        }
 
         settings.mode = mode;
         saveSettings();
@@ -1758,7 +1764,18 @@ document.addEventListener('DOMContentLoaded', () => {
             applyReaderSettings(loadSettings());
             return;
         }
-        if (event.key !== HISTORY_KEY || reader.open) return;
+        if (event.key !== HISTORY_KEY) return;
+        if (reader.open) {
+            // another tab took a newer page of the open comic from sync: this tab's own pull will see
+            // no difference any more, so the page is offered here
+            const entry = readHistory()[reader.filename];
+            let before = null;
+            try {
+                before = (JSON.parse(event.oldValue || '{}') || {})[reader.filename];
+            } catch (e) { /* unreadable old value: treat the entry as changed */ }
+            if (entry && (!before || before.updated_at !== entry.updated_at)) offerRemotePage(entry);
+            return;
+        }
         loadRecentComics();
         if (currentView === 'library') renderAllComics();
     });
@@ -2267,29 +2284,31 @@ document.addEventListener('DOMContentLoaded', () => {
         const put = () => fileStore('readwrite', (store) => store.put(record, file.name));
         try {
             if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-            // the browser's quota can be far below FILE_CACHE_LIMIT (small phones, private windows):
-            // the least recently read copies make room until this one fits or none is left
+            // the browser's quota can be far below FILE_CACHE_LIMIT (small phones, private windows): the
+            // least recently read copies make room, one at a time, until this one fits. A deleted copy's
+            // space can stay in use until the browser lets go of it later, so after a drop that freed
+            // nothing (or when usage is unknown), or once the drops freed this copy's size, it is tried
+            // once more and then given up
             let others = null;
+            let last = false;
+            let freed = 0;
             for (;;) {
                 try {
                     await put();
                     break;
                 } catch (err) {
-                    if (!isQuotaError(err)) throw err;
-                    const first = others === null;
-                    if (first) others = await cachedCopiesOldestFirst(file.name);
+                    if (!isQuotaError(err) || last) throw err;
+                    if (others === null) {
+                        // nothing is dropped for a file bigger than the whole quota
+                        if (await overQuota(file.size)) throw err;
+                        others = await cachedNamesOldestFirst(file.name);
+                    }
                     if (!others.length) throw err;
-                    // the first time as many as the quota estimate says are missing, then one at a time;
-                    // nothing is dropped for a file bigger than the whole quota
-                    let missing = first ? await missingSpace(file.size) : 0;
-                    if (missing === Infinity) throw err;
-                    const drop = [];
-                    do {
-                        const oldest = others.shift();
-                        missing -= oldest.size || 0;
-                        drop.push(oldest.name);
-                    } while (missing > 0 && others.length);
-                    await deleteCachedComics(drop);
+                    const before = await storageUsage();
+                    await deleteCachedComics([others.shift()]);
+                    const after = await storageUsage();
+                    if (before > after) freed += before - after;
+                    last = !(before > after) || freed >= file.size;
                 }
             }
             await pruneFileCache(FILE_CACHE_LIMIT, file.name);
@@ -2298,15 +2317,23 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // bytes over the origin's quota once `size` more is stored, from the browser's (rough) estimate;
-    // 0 if unknown, Infinity if `size` alone is over the quota
-    async function missingSpace(size) {
+    // `size` alone is more than the origin's whole quota (from the browser's rough estimate)
+    async function overQuota(size) {
         try {
-            const { usage = 0, quota = 0 } = await navigator.storage.estimate();
-            if (!quota) return 0;
-            return size > quota ? Infinity : Math.max(0, usage + size - quota);
+            const { quota = 0 } = await navigator.storage.estimate();
+            return Boolean(quota) && size > quota;
         } catch (err) {
-            return 0;
+            return false;
+        }
+    }
+
+    // bytes the origin uses, or null when the browser does not say
+    async function storageUsage() {
+        try {
+            const { usage } = await navigator.storage.estimate();
+            return Number.isFinite(usage) ? usage : null;
+        } catch (err) {
+            return null;
         }
     }
 
@@ -2330,11 +2357,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // drops the least recently read copies until the total fits in `limit`; `keep` (the comic being
-    // cached) always stays. Returns how many copies were dropped
+    // cached) always stays. Returns how many copies were dropped. Reading the copies holds on to their
+    // data for a while (deleting one then frees nothing until the browser lets go of it), so the store
+    // is only read when the whole origin uses more than `limit`
     async function pruneFileCache(limit = FILE_CACHE_LIMIT, keep = null) {
+        const usage = await storageUsage();
+        if (usage !== null && usage <= limit) return 0;
         const records = await fileStore('readonly', (store) => store.getAll());
         let total = records.reduce((sum, record) => sum + (record.size || 0), 0);
-        const candidates = oldestFirst(records.filter((record) => record.name !== keep));
+        const candidates = oldestFirst(records.filter((record) => record.name !== keep), (record) => record.name);
         const drop = [];
         while (total > limit && candidates.length) {
             const oldest = candidates.shift();
@@ -2345,19 +2376,18 @@ document.addEventListener('DOMContentLoaded', () => {
         return drop.length;
     }
 
-    // name and size of every offline copy except `keep`, least recently read first (read once, so the
-    // retry loop in cacheComicFile does not read the store again after every drop)
-    async function cachedCopiesOldestFirst(keep) {
-        const records = await fileStore('readonly', (store) => store.getAll());
-        return oldestFirst(records.filter((record) => record.name !== keep))
-            .map((record) => ({ name: record.name, size: record.size || 0 }));
+    // names of the offline copies except `keep`, least recently read first. Only the keys are read: a
+    // loaded copy would keep its space in use after it is deleted
+    async function cachedNamesOldestFirst(keep) {
+        const names = await fileStore('readonly', (store) => store.getAllKeys());
+        return oldestFirst(names.filter((name) => name !== keep), (name) => name);
     }
 
-    function oldestFirst(records) {
+    function oldestFirst(items, nameOf) {
         // reopening a copy does not rewrite it, so the reading history gives the real last use
         const history = readHistory();
-        const lastRead = (record) => history[record.name]?.timestamp ?? record.lastOpened ?? 0;
-        return records.sort((a, b) => lastRead(a) - lastRead(b));
+        const lastRead = (item) => history[nameOf(item)]?.timestamp ?? item.lastOpened ?? 0;
+        return items.sort((a, b) => lastRead(a) - lastRead(b));
     }
 
     async function saveDirectoryHandle(dirHandle) {
