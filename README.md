@@ -93,7 +93,17 @@ Sync is automatic, there is nothing to press:
 - The bar turns amber while offline or retrying and red after repeated failures. **Sync now** forces a full check.
 - A comic whose file name the server cannot store (longer than 512 characters, or with invalid characters) stays on this device only and never blocks the rest of the sync.
 
-The sign-in lasts until the tab is closed unless **Stay signed in on this device** is ticked. **Log out** signs out this browser only; your other devices stay signed in, and it works offline too. **Delete my synced data** removes everything from the server and logs out; the device keeps its own copy and does not upload it again when you sign in later (only new reading is synced). A password reset link opens only the new-password form and nothing syncs until it is saved; you then sign in with the new password. An expired or already used confirmation or reset link shows a message in the Account view.
+The sign-in lasts until the tab is closed unless **Stay signed in on this device** is ticked. **Log out** signs out this browser only; your other devices stay signed in, and it works offline too.
+
+Account options:
+- **Create account** asks for the password twice (at least 8 characters). Every password field has a show/hide button (an eye icon; for screen readers a "Show password" toggle button with `aria-pressed`).
+- **Resend confirmation email** appears after creating an account and when signing in fails because the address is not confirmed yet.
+- **Forgot password?** emails a reset link. The link opens only the new-password form (new password twice) and nothing syncs until it is saved; you then sign in with the new password. Saving it signs out your other devices.
+- Signed in, three collapsible sections hold the rest:
+  - **Change password**: your current password and the new one twice. The current one is checked by signing in again (which also satisfies Supabase's *Secure password change* setting); Supabase then signs out your other devices.
+  - **Change email address**: Supabase sends a confirmation link to the current and to the new address (*Secure email change*, on by default), and the change takes effect once both are opened; until then you sign in with the current address. These links never sign you in: the first one shows "One confirmation link is accepted…", the second "Email address changed. Sign in with your new address."
+  - **Sign out everywhere or delete**: **Sign out of all devices** ends every session of the account, here and elsewhere (each device keeps its own copy of your progress). **Delete my synced data** removes everything from the server and logs out; the device keeps its own copy and does not upload it again when you sign in later (only new reading is synced). **Delete my account** (type your email address to confirm) deletes the account and everything synced with it; the device keeps its own copy and does not upload it anywhere. It needs `delete_my_account()` from the last block of `supabase/schema.sql`; until that has been run, it says so.
+- Supabase Auth errors (rate limits, a weak or reused password, an unconfirmed address, wrong credentials) are shown as fixed, plain messages. Text that arrives in a link's URL is never shown: an expired or already used confirmation, reset or email-change link shows a fixed message in the Account view.
 
 If two accounts are signed in in two tabs of the same browser, the one that synced first keeps syncing and the other tab shows "Another account is syncing in another tab" until the first one logs out, is closed or stays hidden for 2 minutes.
 

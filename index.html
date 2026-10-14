@@ -217,9 +217,14 @@
                     <label class="finder-field">Email
                         <input id="syncEmail" type="email" required autocomplete="email" spellcheck="false">
                     </label>
-                    <label class="finder-field">Password <span id="syncPasswordHint" class="finder-count" hidden>(at least 8 characters)</span>
-                        <input id="syncPassword" type="password" required minlength="8" autocomplete="current-password">
-                    </label>
+                    <div class="finder-field">
+                        <label for="syncPassword">Password <span id="syncPasswordHint" class="finder-count" hidden>(at least 8 characters)</span></label>
+                        <div class="password-field"><input id="syncPassword" type="password" required autocomplete="current-password"></div>
+                    </div>
+                    <div id="syncConfirmField" class="finder-field" hidden>
+                        <label for="syncPasswordConfirm">Confirm password</label>
+                        <div class="password-field"><input id="syncPasswordConfirm" type="password" autocomplete="new-password"></div>
+                    </div>
                     <label class="finder-check"><input id="syncPersist" type="checkbox"> Stay signed in on this device</label>
                     <div class="finder-actions-row">
                         <button type="submit" id="syncAuthSubmit" class="finder-submit">Sign in</button>
@@ -229,9 +234,14 @@
             </div>
 
             <form id="syncRecoveryForm" class="finder-form account-form" hidden>
-                <label class="finder-field">Choose a new password (at least 8 characters)
-                    <input id="syncNewPassword" type="password" required minlength="8" autocomplete="new-password">
-                </label>
+                <div class="finder-field">
+                    <label for="syncNewPassword">Choose a new password <span id="syncNewPasswordHint" class="finder-count">(at least 8 characters)</span></label>
+                    <div class="password-field"><input id="syncNewPassword" type="password" required minlength="8" autocomplete="new-password" aria-describedby="syncNewPasswordHint"></div>
+                </div>
+                <div class="finder-field">
+                    <label for="syncNewPasswordConfirm">Confirm the new password</label>
+                    <div class="password-field"><input id="syncNewPasswordConfirm" type="password" required autocomplete="new-password"></div>
+                </div>
                 <button type="submit" class="finder-submit">Save new password</button>
             </form>
 
@@ -239,14 +249,68 @@
                 <p>Signed in as <b id="syncUserEmail"></b>.</p>
                 <p class="account-note">Synced: reading progress and Recently Read, reader view settings and My channels. Comic files and Telegram logins stay on each device.</p>
                 <p class="account-note">Changes sync automatically while the page is open. Sync now forces a full check.</p>
-                <div class="finder-actions-row">
+                <div class="finder-actions-row account-actions">
                     <button type="button" id="syncNowBtn" class="finder-submit">Sync now</button>
                     <button type="button" id="syncLogoutBtn" class="link-btn link-btn-small">Log out</button>
                 </div>
-                <button type="button" id="syncDeleteBtn" class="link-btn link-btn-small account-danger">Delete my synced data</button>
+
+                <details id="syncPasswordSection" class="finder-card account-section">
+                    <summary>Change password</summary>
+                    <form id="syncChangePasswordForm" class="finder-form account-form">
+                        <div class="finder-field">
+                            <label for="syncCurrentPassword">Current password</label>
+                            <div class="password-field"><input id="syncCurrentPassword" type="password" required autocomplete="current-password"></div>
+                        </div>
+                        <div class="finder-field">
+                            <label for="syncChangePassword">New password <span id="syncChangePasswordHint" class="finder-count">(at least 8 characters)</span></label>
+                            <div class="password-field"><input id="syncChangePassword" type="password" required minlength="8" autocomplete="new-password" aria-describedby="syncChangePasswordHint"></div>
+                        </div>
+                        <div class="finder-field">
+                            <label for="syncChangePasswordConfirm">Confirm the new password</label>
+                            <div class="password-field"><input id="syncChangePasswordConfirm" type="password" required autocomplete="new-password"></div>
+                        </div>
+                        <p class="account-note">Your other devices are signed out and sign in again with the new password.</p>
+                        <button type="submit" class="finder-submit">Change password</button>
+                    </form>
+                    <div class="account-live" role="status"><div id="syncPasswordMessage" class="notice" hidden></div></div>
+                </details>
+
+                <details id="syncEmailSection" class="finder-card account-section">
+                    <summary>Change email address</summary>
+                    <form id="syncChangeEmailForm" class="finder-form account-form">
+                        <label class="finder-field">New email address
+                            <input id="syncNewEmail" type="email" required autocomplete="email" spellcheck="false">
+                        </label>
+                        <p class="account-note">For your security, a confirmation link goes to your current address and one to the new address. The change takes effect once you have opened both; until then you sign in with your current address.</p>
+                        <button type="submit" class="finder-submit">Send confirmation links</button>
+                    </form>
+                    <div class="account-live" role="status"><div id="syncEmailMessage" class="notice" hidden></div></div>
+                </details>
+
+                <details id="syncDangerSection" class="finder-card account-section">
+                    <summary>Sign out everywhere or delete</summary>
+                    <div class="account-danger-item">
+                        <p>End every session of this account, here and on your other devices. Each device keeps its own copy of your progress.</p>
+                        <button type="button" id="syncLogoutAllBtn" class="link-btn link-btn-small">Sign out of all devices</button>
+                    </div>
+                    <div class="account-danger-item">
+                        <p>Remove your synced progress, settings and channel list from the server and log out. This device keeps its own copy.</p>
+                        <button type="button" id="syncDeleteBtn" class="link-btn link-btn-small account-danger">Delete my synced data</button>
+                    </div>
+                    <form id="syncDeleteAccountForm" class="account-danger-item finder-form account-form">
+                        <p>Delete your account and everything synced with it, for good. This device keeps its own copy of your progress.</p>
+                        <label class="finder-field">Type your email address to confirm
+                            <input id="syncDeleteConfirm" type="email" required autocomplete="off" spellcheck="false">
+                        </label>
+                        <button type="submit" id="syncDeleteAccountBtn" class="finder-submit account-danger-btn">Delete my account</button>
+                    </form>
+                </details>
             </div>
 
-            <div id="syncMessage" class="notice" hidden></div>
+            <div class="account-live" role="status"><div id="syncMessage" class="notice" hidden></div></div>
+            <div id="syncResendRow" class="account-resend" hidden>
+                <button type="button" id="syncResendBtn" class="link-btn link-btn-small">Resend confirmation email</button>
+            </div>
         </div>
 
         <div id="recentComics" style="display:none;">

@@ -17,8 +17,13 @@
  *
  * A session that arrives in the URL never syncs: anyone can send a link with
  * the tokens of their own account, and this device's history would upload
- * there. A confirmation link only says that the email is confirmed; a reset
+ * there. A confirmation or email-change link only says that it worked; a reset
  * link shows the new-password form, and that session ends once it is saved.
+ * Text in the URL is never shown, only fixed messages chosen by its codes.
+ *
+ * The account view also changes the password or email address, resends the
+ * confirmation email, signs out every device and deletes the account (the
+ * delete_my_account() function in schema.sql).
  */
 document.addEventListener('DOMContentLoaded', () => {
     const config = window.COMIC_SYNC_CONFIG || {};
@@ -71,6 +76,30 @@ document.addEventListener('DOMContentLoaded', () => {
         otp_expired: 'This email link has expired or was already used. Request a new one below.'
     };
     const LINK_ERROR = 'This email link is invalid or has expired. Request a new one below.';
+    // the first of the two links of a secure email change lands on "#message=Confirmation link accepted…"
+    const LINK_NOTICES = {
+        email_change_partial: 'One confirmation link is accepted. Open the link sent to your other email address to finish the change.'
+    };
+    const MIN_PASSWORD = 8;
+    // fixed texts for Supabase Auth error codes; other errors show the server's own message
+    const AUTH_ERRORS = {
+        email_not_confirmed: 'This email address is not confirmed yet. Open the link in the confirmation email, or send a new one below.',
+        over_email_send_rate_limit: 'Too many emails were sent recently. Wait a while (up to an hour), then try again.',
+        over_request_rate_limit: 'Too many attempts. Wait a few minutes, then try again.',
+        weak_password: 'This password is too weak. Choose a longer one with a mix of letters, digits and symbols.',
+        same_password: 'The new password must be different from your current one.',
+        reauthentication_needed: 'For your security, log out and sign in again, then change your password.',
+        current_password_required: 'Enter your current password.',
+        current_password_invalid: 'Your current password is not correct.',
+        invalid_credentials: 'Wrong email address or password.',
+        email_exists: 'Another account already uses this email address.',
+        email_address_invalid: 'This email address cannot be used. Check it for typos.',
+        signup_disabled: 'New accounts cannot be created right now.',
+        user_banned: 'This account is blocked.',
+        session_not_found: 'Your session has ended. Sign in again.'
+    };
+    const PWNED_PASSWORD = 'This password appears in known data leaks. Choose a different one.';
+    const OFFLINE_TEXT = 'Could not reach the server. Check your connection and try again.';
     const link = readEmailLink();
 
     const $ = (id) => document.getElementById(id);
@@ -87,15 +116,34 @@ document.addEventListener('DOMContentLoaded', () => {
         email: $('syncEmail'),
         password: $('syncPassword'),
         passwordHint: $('syncPasswordHint'),
+        confirmField: $('syncConfirmField'),
+        passwordConfirm: $('syncPasswordConfirm'),
         persist: $('syncPersist'),
         submit: $('syncAuthSubmit'),
         forgot: $('syncForgotBtn'),
+        resendRow: $('syncResendRow'),
+        resend: $('syncResendBtn'),
         recoveryForm: $('syncRecoveryForm'),
         newPassword: $('syncNewPassword'),
+        newPasswordConfirm: $('syncNewPasswordConfirm'),
         userEmail: $('syncUserEmail'),
         syncNow: $('syncNowBtn'),
         logout: $('syncLogoutBtn'),
+        passwordSection: $('syncPasswordSection'),
+        changePasswordForm: $('syncChangePasswordForm'),
+        currentPassword: $('syncCurrentPassword'),
+        changePassword: $('syncChangePassword'),
+        changePasswordConfirm: $('syncChangePasswordConfirm'),
+        passwordMessage: $('syncPasswordMessage'),
+        emailSection: $('syncEmailSection'),
+        changeEmailForm: $('syncChangeEmailForm'),
+        newEmail: $('syncNewEmail'),
+        emailMessage: $('syncEmailMessage'),
+        logoutAll: $('syncLogoutAllBtn'),
         deleteData: $('syncDeleteBtn'),
+        deleteAccountForm: $('syncDeleteAccountForm'),
+        deleteConfirm: $('syncDeleteConfirm'),
+        heading: document.querySelector('#accountView h1'),
         message: $('syncMessage')
     };
     if (!els.bar) return;
@@ -126,6 +174,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let leaving = false;    // the page is being closed: its heartbeat no longer counts
     // this tab holds (or held) a session from a reset link: it stays in this tab's sessionStorage
     let linkTab = false;
+    let emailChanged = false; // an email-change link was opened: a session of this tab shows the old address
     const skippedNames = new Set(); // names the server cannot store, reported once
 
     /* ---------------- storage ---------------- */
@@ -192,8 +241,9 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     /*
-     * What an email link left in the URL: { error: code } for a failed one, { session: type } for
-     * one with tokens. Only reset links (type=recovery) are handed to the library.
+     * What an email link left in the URL: { error: code } for a failed one, { session, type, token }
+     * for one with tokens, { notice: key } for a message (key '' = nothing to show). Only reset
+     * links (type=recovery) are handed to the library; the URL's own text is only compared, never shown.
      */
     function readEmailLink() {
         const params = {};
@@ -204,7 +254,13 @@ document.addEventListener('DOMContentLoaded', () => {
             return null;
         }
         if (params.error || params.error_code || params.error_description) return { error: params.error_code || '' };
-        if (params.access_token) return { session: params.type === 'recovery' ? 'recovery' : 'other', token: params.access_token };
+        if (params.access_token) {
+            const type = params.type === 'recovery' || params.type === 'email_change' ? params.type : 'other';
+            return { session: type === 'recovery' ? 'recovery' : 'other', type, token: params.access_token };
+        }
+        if (params.message !== undefined) {
+            return { notice: /^Confirmation link accepted\b/.test(params.message) ? 'email_change_partial' : '' };
+        }
         return null;
     }
 
@@ -344,12 +400,19 @@ document.addEventListener('DOMContentLoaded', () => {
             otherAccount = false;
             syncUserId = null;
             releaseHeartbeat(previous);
+            // nor anything typed into its forms
+            resetSignedIn();
         }
         // the session of a reset link never syncs (the account may not even be the user's own)
         if (user && !recovering && syncUserId !== uid) {
             syncUserId = uid;
             requestSync('signin', { pull: true, full: true });
             startTicker();
+        }
+        if (emailChanged) {
+            emailChanged = false;
+            // a session kept in this tab still holds the old address; a refresh brings the new one
+            if (user && !recovering) getClient().then((db) => db.auth.refreshSession()).catch(() => {});
         }
         render();
     }
@@ -374,27 +437,57 @@ document.addEventListener('DOMContentLoaded', () => {
         ['', '-user', '-code-verifier', '-flows-code-verifier'].forEach((suffix) => authStorage.removeItem(AUTH_KEY + suffix));
     }
 
-    // ends the session in this browser only; the user's other devices stay signed in
-    async function signOutHere() {
+    // ends the session in this browser only (scope 'global': every session of the account). This
+    // browser is signed out either way; false when the server could not be told
+    async function signOutHere(scope = 'local') {
         let error = null;
         try {
-            ({ error } = await (await getClient()).auth.signOut({ scope: 'local' }));
+            ({ error } = await (await getClient()).auth.signOut({ scope }));
         } catch (err) {
             error = err;
         }
         if (error) removeAuthKeys();
+        return !error;
     }
 
     /* ---------------- UI ---------------- */
 
-    function showMessage(text, kind = 'info') {
+    // `target`: the view's message below everything (default) or the one of a section
+    function showMessage(text, kind = 'info', target = els.message) {
         if (!text) {
-            els.message.hidden = true;
+            target.hidden = true;
             return;
         }
-        els.message.textContent = text;
-        els.message.dataset.kind = kind;
-        els.message.hidden = false;
+        target.textContent = text;
+        target.dataset.kind = kind;
+        target.hidden = false;
+    }
+
+    function clearMessages() {
+        [els.message, els.passwordMessage, els.emailMessage].forEach((box) => { box.hidden = true; });
+        els.resendRow.hidden = true;
+    }
+
+    // a fixed text for the Auth errors people run into. `email`: the request sends an email,
+    // `signup`: a new account (the Before User Created hook answers 403 while sign-ups are closed)
+    function authErrorText(err, { email = false, signup = false } = {}) {
+        if (!err) return '';
+        const code = err.code || '';
+        if (code === 'weak_password' && Array.isArray(err.reasons) && err.reasons.includes('pwned')) return PWNED_PASSWORD;
+        if (AUTH_ERRORS[code]) return AUTH_ERRORS[code];
+        if (err.status === 429) return email ? AUTH_ERRORS.over_email_send_rate_limit : AUTH_ERRORS.over_request_rate_limit;
+        if (signup && err.status === 403) return AUTH_ERRORS.signup_disabled;
+        if (err.name === 'AuthRetryableFetchError' || err.status === 0) return OFFLINE_TEXT;
+        return err.message || String(err);
+    }
+
+    const codeError = (code) => Object.assign(new Error(AUTH_ERRORS[code] || code), { code });
+
+    // the error of a new password and its confirmation, '' when both are fine
+    function newPasswordProblem(password, confirmation) {
+        if (password.length < MIN_PASSWORD) return `Use at least ${MIN_PASSWORD} characters for the new password.`;
+        if (password !== confirmation) return 'The two passwords do not match.';
+        return '';
     }
 
     function formatAgo(ms) {
@@ -420,6 +513,7 @@ document.addEventListener('DOMContentLoaded', () => {
         els.recoveryForm.hidden = !recovering;
         els.signedOut.hidden = Boolean(user) || recovering;
         els.signedIn.hidden = !user || recovering;
+        if (user || recovering) els.resendRow.hidden = true;
 
         const state = loadState();
         if (recovering) {
@@ -465,22 +559,87 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    /* show/hide buttons of the password fields; the name stays "Show password", aria-pressed tells the state */
+
+    const EYE_ICONS = '<svg class="icon-show" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z"/><circle cx="8" cy="8" r="2"/></svg>'
+        + '<svg class="icon-hide" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2 2l12 12"/><path d="M6.5 3.2A6.8 6.8 0 0 1 8 3c4.5 0 7 5 7 5a12 12 0 0 1-1.9 2.6M4.3 4.3C2.2 5.6 1 8 1 8s2.5 5 7 5a6.6 6.6 0 0 0 3.7-1.1"/><path d="M6.6 6.6a2 2 0 0 0 2.8 2.8"/></svg>';
+
+    function setPasswordShown(button, input, shown) {
+        input.type = shown ? 'text' : 'password';
+        button.setAttribute('aria-pressed', String(shown));
+        button.title = shown ? 'Hide password' : 'Show password';
+    }
+
+    function addPasswordToggle(input) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'password-toggle';
+        button.setAttribute('aria-controls', input.id);
+        button.setAttribute('aria-label', 'Show password');
+        button.innerHTML = EYE_ICONS;
+        setPasswordShown(button, input, false);
+        button.addEventListener('click', () => setPasswordShown(button, input, input.type === 'password'));
+        input.after(button);
+    }
+
+    // after a form is sent or left: its passwords are hidden again
+    function hidePasswords(container) {
+        container.querySelectorAll('.password-toggle').forEach((button) => {
+            const input = $(button.getAttribute('aria-controls'));
+            if (input) setPasswordShown(button, input, false);
+        });
+    }
+
     function setMode(next) {
         mode = next;
+        const signup = next === 'signup';
         els.tabs.forEach((tab) => {
             const active = tab.dataset.tab === next;
             tab.classList.toggle('active', active);
             tab.setAttribute('aria-selected', String(active));
         });
-        els.submit.textContent = next === 'signup' ? 'Create account' : 'Sign in';
-        els.password.autocomplete = next === 'signup' ? 'new-password' : 'current-password';
-        els.passwordHint.hidden = next !== 'signup';
-        els.forgot.hidden = next === 'signup';
-        showMessage('');
+        els.submit.textContent = signup ? 'Create account' : 'Sign in';
+        els.password.autocomplete = signup ? 'new-password' : 'current-password';
+        // the minimum is for new passwords; an existing one may be shorter
+        if (signup) {
+            els.password.minLength = MIN_PASSWORD;
+            els.password.setAttribute('aria-describedby', 'syncPasswordHint');
+        } else {
+            els.password.removeAttribute('minlength');
+            els.password.removeAttribute('aria-describedby');
+            els.passwordConfirm.value = '';
+        }
+        els.passwordHint.hidden = !signup;
+        els.confirmField.hidden = !signup;
+        els.passwordConfirm.required = signup;
+        els.forgot.hidden = signup;
+        hidePasswords(els.form);
+        clearMessages();
     }
 
     function busy(container, on) {
         container.querySelectorAll('button, input').forEach((el) => { el.disabled = on; });
+    }
+
+    // the signed-in part is empty and closed again for the next account
+    function resetSignedIn() {
+        els.signedIn.querySelectorAll('input').forEach((input) => { input.value = ''; });
+        els.signedIn.querySelectorAll('details').forEach((section) => { section.open = false; });
+        hidePasswords(els.signedIn);
+        els.passwordMessage.hidden = true;
+        els.emailMessage.hidden = true;
+    }
+
+    // logged out, signed out everywhere or deleted: the button that was used is gone, so the focus
+    // moves to the heading (the message below is announced)
+    function afterSignOut(text, kind) {
+        resetSignedIn();
+        render();
+        showMessage(text, kind);
+        const active = document.activeElement;
+        if ((!active || active === document.body || els.signedIn.contains(active)) && els.heading && els.heading.getClientRects().length) {
+            els.heading.focus();
+        }
     }
 
     const redirectUrl = () => window.location.origin + window.location.pathname;
@@ -488,10 +647,22 @@ document.addEventListener('DOMContentLoaded', () => {
     els.tabs.forEach((tab) => tab.addEventListener('click', () => setMode(tab.dataset.tab)));
     els.barBtn.addEventListener('click', () => app() && app().showAccount());
     els.persist.checked = persistSession();
+    document.querySelectorAll('#accountView .password-field input').forEach(addPasswordToggle);
 
     els.form.addEventListener('submit', async (event) => {
         event.preventDefault();
-        showMessage('');
+        clearMessages();
+        const signup = mode === 'signup';
+        const email = els.email.value.trim();
+        const password = els.password.value;
+        if (signup) {
+            const problem = newPasswordProblem(password, els.passwordConfirm.value);
+            if (problem) {
+                showMessage(problem, 'error');
+                (password.length < MIN_PASSWORD ? els.password : els.passwordConfirm).focus();
+                return;
+            }
+        }
         busy(els.form, true);
         try {
             try {
@@ -500,9 +671,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 // storage unavailable
             }
             const auth = (await getClient()).auth;
-            const email = els.email.value.trim();
-            const password = els.password.value;
-            if (mode === 'signup') {
+            if (signup) {
                 const { data, error } = await auth.signUp({ email, password, options: { emailRedirectTo: redirectUrl() } });
                 if (error) throw error;
                 // setMode clears the message, so it goes first
@@ -513,16 +682,39 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else if (!data.session) {
                     setMode('signin');
                     showMessage('Account created. Open the link in the email we just sent to confirm it, then sign in here.', 'info');
+                    els.resendRow.hidden = false;
                 }
             } else {
                 const { error } = await auth.signInWithPassword({ email, password });
                 if (error) throw error;
             }
             els.password.value = '';
+            els.passwordConfirm.value = '';
+            hidePasswords(els.form);
         } catch (err) {
-            showMessage(err.message || String(err), 'error');
+            showMessage(authErrorText(err, { email: signup, signup }), 'error');
+            if (err && err.code === 'email_not_confirmed') els.resendRow.hidden = false;
         } finally {
             busy(els.form, false);
+        }
+    });
+
+    els.resend.addEventListener('click', async () => {
+        const email = els.email.value.trim();
+        if (!email || !els.email.checkValidity()) {
+            showMessage('Enter your email address first, then click "Resend confirmation email" again.', 'error');
+            els.email.focus();
+            return;
+        }
+        els.resend.disabled = true;
+        try {
+            const { error } = await (await getClient()).auth.resend({ type: 'signup', email, options: { emailRedirectTo: redirectUrl() } });
+            if (error) throw error;
+            showMessage('If this address has an account that is not confirmed yet, a new confirmation email is on its way.', 'info');
+        } catch (err) {
+            showMessage(authErrorText(err, { email: true }), 'error');
+        } finally {
+            els.resend.disabled = false;
         }
     });
 
@@ -533,22 +725,34 @@ document.addEventListener('DOMContentLoaded', () => {
             els.email.focus();
             return;
         }
+        clearMessages();
         try {
             const { error } = await (await getClient()).auth.resetPasswordForEmail(email, { redirectTo: redirectUrl() });
             if (error) throw error;
             showMessage('If an account exists for this address, an email with a reset link is on its way.', 'info');
         } catch (err) {
-            showMessage(err.message || String(err), 'error');
+            showMessage(authErrorText(err, { email: true }), 'error');
         }
     });
 
     els.recoveryForm.addEventListener('submit', async (event) => {
         event.preventDefault();
+        clearMessages();
+        const password = els.newPassword.value;
+        const problem = newPasswordProblem(password, els.newPasswordConfirm.value);
+        if (problem) {
+            showMessage(problem, 'error');
+            (password.length < MIN_PASSWORD ? els.newPassword : els.newPasswordConfirm).focus();
+            return;
+        }
+        let saved = false;
         busy(els.recoveryForm, true);
         try {
-            const { error } = await (await getClient()).auth.updateUser({ password: els.newPassword.value });
+            const { error } = await (await getClient()).auth.updateUser({ password });
             if (error) throw error;
             els.newPassword.value = '';
+            els.newPasswordConfirm.value = '';
+            hidePasswords(els.recoveryForm);
             // the link's session ends here (still no sync); the user signs in with the new password
             await signOutHere();
             user = null;
@@ -556,11 +760,14 @@ document.addEventListener('DOMContentLoaded', () => {
             stripLink();
             setMode('signin');
             showMessage('Your new password is saved. Sign in with it below.', 'info');
+            saved = true;
         } catch (err) {
-            showMessage(err.message || String(err), 'error');
+            showMessage(authErrorText(err), 'error');
         } finally {
             busy(els.recoveryForm, false);
             render();
+            // the form is gone: the sign-in form takes the focus
+            if (saved && els.email.getClientRects().length) els.email.focus();
         }
     });
 
@@ -580,8 +787,98 @@ document.addEventListener('DOMContentLoaded', () => {
             failures = 0;
             lastError = '';
             busy(els.signedIn, false);
-            showMessage('Logged out. Your progress stays on this device.', 'info');
-            render();
+            afterSignOut('Logged out. Your progress stays on this device.', 'info');
+        }
+    });
+
+    // every session of the account ends (Supabase revokes all its refresh tokens); local cleanup as Log out
+    els.logoutAll.addEventListener('click', async () => {
+        if (!user || deleting) return;
+        if (!confirm('Sign out of all devices?\nEvery session of this account ends, here and on your other devices. Each device keeps its own copy of your progress.')) return;
+        busy(els.signedIn, true);
+        stopTimers();
+        let reached = false;
+        try {
+            await Promise.race([requestSync('push'), wait(4000)]);
+            reached = await signOutHere('global');
+        } finally {
+            releaseHeartbeat(user && user.id);
+            user = null;
+            failures = 0;
+            lastError = '';
+            busy(els.signedIn, false);
+            if (reached) {
+                afterSignOut('Signed out of all devices. Your progress stays on this device.', 'info');
+            } else {
+                afterSignOut('Logged out here, but the server could not be reached, so your other devices may still be signed in. Sign in and try again when you are online.', 'error');
+            }
+        }
+    });
+
+    els.changePasswordForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!user || !user.email) return;
+        const target = els.passwordMessage;
+        clearMessages();
+        const current = els.currentPassword.value;
+        const next = els.changePassword.value;
+        const problem = newPasswordProblem(next, els.changePasswordConfirm.value) || (next === current ? AUTH_ERRORS.same_password : '');
+        if (problem) {
+            showMessage(problem, 'error', target);
+            (next.length < MIN_PASSWORD || next === current ? els.changePassword : els.changePasswordConfirm).focus();
+            return;
+        }
+        let wrongCurrent = false;
+        busy(els.changePasswordForm, true);
+        try {
+            const auth = (await getClient()).auth;
+            // proves the current password; the fresh session also satisfies "Secure password change"
+            const check = await auth.signInWithPassword({ email: user.email, password: current });
+            if (check.error) throw check.error.code === 'invalid_credentials' ? codeError('current_password_invalid') : check.error;
+            // current_password too, for projects that require it
+            const { error } = await auth.updateUser({ password: next, current_password: current });
+            if (error) throw error;
+            [els.currentPassword, els.changePassword, els.changePasswordConfirm].forEach((input) => { input.value = ''; });
+            hidePasswords(els.changePasswordForm);
+            showMessage('Your password is changed. Your other devices are signed out; sign in there with the new password.', 'info', target);
+        } catch (err) {
+            showMessage(authErrorText(err), 'error', target);
+            wrongCurrent = Boolean(err) && (err.code === 'current_password_invalid' || err.code === 'current_password_required');
+        } finally {
+            busy(els.changePasswordForm, false);
+            // after the fields are enabled again
+            if (wrongCurrent) els.currentPassword.focus();
+        }
+    });
+
+    // secure email change (the Supabase default): links go to the current and the new address
+    els.changeEmailForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!user) return;
+        const target = els.emailMessage;
+        clearMessages();
+        const email = els.newEmail.value.trim();
+        const currentEmail = user.email || '';
+        if (!email || !els.newEmail.checkValidity()) {
+            showMessage('Enter the new email address.', 'error', target);
+            els.newEmail.focus();
+            return;
+        }
+        if (email.toLowerCase() === currentEmail.toLowerCase()) {
+            showMessage('This is already your email address.', 'error', target);
+            els.newEmail.focus();
+            return;
+        }
+        busy(els.changeEmailForm, true);
+        try {
+            const { error } = await (await getClient()).auth.updateUser({ email }, { emailRedirectTo: redirectUrl() });
+            if (error) throw error;
+            els.newEmail.value = '';
+            showMessage(`Confirmation links are on their way to ${currentEmail} and to ${email}. Open both to finish the change; until then you sign in with ${currentEmail}.`, 'info', target);
+        } catch (err) {
+            showMessage(authErrorText(err, { email: true }), 'error', target);
+        } finally {
+            busy(els.changeEmailForm, false);
         }
     });
 
@@ -593,6 +890,7 @@ document.addEventListener('DOMContentLoaded', () => {
         busy(els.signedIn, true);
         stopTimers();
         queued = null;
+        let done = false;
         try {
             // a running cycle stops before its next write; then nothing can re-insert rows meanwhile
             if (running) await running;
@@ -602,31 +900,85 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (progress.error) throw progress.error;
                 const prefs = await db.from('user_settings').delete().eq('user_id', uid);
                 if (prefs.error) throw prefs.error;
-                // not a first sync next time: this device's copy is not uploaded again at the next sign-in
-                saveState({
-                    userId: uid,
-                    lastSyncAt: Date.now(),
-                    pending: {},
-                    settingsPending: false,
-                    cursor: null,
-                    settingsCursor: null,
-                    settingsSeenAt: 0,
-                    lastFullAt: 0
-                });
+                forgetServerCopy(uid);
             });
             await signOutHere();
             releaseHeartbeat(uid);
             user = null;
             failures = 0;
             lastError = '';
-            showMessage('Your synced data was deleted from the server and you are logged out.', 'info');
+            done = true;
         } catch (err) {
             showMessage(err.message || String(err), 'error');
         } finally {
             deleting = false;
             busy(els.signedIn, false);
             if (user) startTicker();
-            render();
+            if (done) afterSignOut('Your synced data was deleted from the server and you are logged out.', 'info');
+            else render();
+        }
+    });
+
+    // not a first sync next time: this device's copy is not uploaded again at the next sign-in
+    function forgetServerCopy(uid) {
+        saveState({
+            userId: uid,
+            lastSyncAt: Date.now(),
+            pending: {},
+            settingsPending: false,
+            cursor: null,
+            settingsCursor: null,
+            settingsSeenAt: 0,
+            lastFullAt: 0
+        });
+    }
+
+    // delete_my_account() (schema.sql) removes the auth user; its rows go with it (on delete cascade)
+    els.deleteAccountForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!user || deleting) return;
+        const email = user.email || '';
+        clearMessages();
+        if (!email || els.deleteConfirm.value.trim().toLowerCase() !== email.toLowerCase()) {
+            showMessage('To confirm, type your email address exactly as it is shown above.', 'error');
+            els.deleteConfirm.focus();
+            return;
+        }
+        if (!confirm(`Delete the account ${email} for good?\nIts synced progress, settings and channel list are deleted from the server and you are logged out on every device. This cannot be undone. This device keeps its own copy of your progress.`)) return;
+        const uid = user.id;
+        deleting = true;
+        busy(els.signedIn, true);
+        stopTimers();
+        queued = null;
+        let done = false;
+        try {
+            if (running) await running;
+            await withSyncLock(async () => {
+                const res = await (await getClient()).rpc('delete_my_account');
+                if (res.error) {
+                    // before the owner ran the SQL: no such function (404, PGRST202)
+                    if (res.status === 404 || res.error.code === 'PGRST202') {
+                        throw new Error('Deleting accounts is not available yet: the site owner has to update the server first.');
+                    }
+                    throw res.error;
+                }
+                forgetServerCopy(uid);
+            });
+            // the server session went with the account; this removes the copy kept here
+            await signOutHere();
+            releaseHeartbeat(uid);
+            user = null;
+            failures = 0;
+            lastError = '';
+            done = true;
+        } catch (err) {
+            showMessage(authErrorText(err), 'error');
+        } finally {
+            deleting = false;
+            busy(els.signedIn, false);
+            if (user) startTicker();
+            if (done) afterSignOut('Your account and its synced data were deleted. This device keeps its own copy of your progress.', 'info');
+            else render();
         }
     });
 
@@ -1348,10 +1700,18 @@ document.addEventListener('DOMContentLoaded', () => {
             stripLink();
             notice = [LINK_ERRORS[link.error] || LINK_ERROR, 'error'];
         } else if (link && link.session === 'other') {
-            // a confirmation (or any other) link: the email is confirmed, its session is not used
+            // a confirmation, email-change (or any other) link: it worked, its session is not used
             tokens.push(link.token);
             stripLink();
-            notice = ['Email confirmed. Sign in with your password.', 'info'];
+            if (link.type === 'email_change') {
+                emailChanged = true;
+                notice = ['Email address changed. Sign in with your new address.', 'info'];
+            } else {
+                notice = ['Email confirmed. Sign in with your password.', 'info'];
+            }
+        } else if (link && link.notice !== undefined) {
+            stripLink();
+            if (LINK_NOTICES[link.notice]) notice = [LINK_NOTICES[link.notice], 'info'];
         }
         tokens.forEach(revokeToken);
         if (!notice) return;

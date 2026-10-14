@@ -1605,6 +1605,133 @@ body.reader-strip {
     padding: 10px 18px;
 }
 
+.account-actions {
+    flex-wrap: wrap;
+    margin-bottom: 18px;
+}
+
+/* a password field with its show/hide button inside the right edge */
+.password-field {
+    position: relative;
+    display: flex;
+}
+
+.finder-form .password-field input {
+    flex: 1;
+    min-width: 0;
+    padding-right: 44px;
+}
+
+.password-toggle {
+    position: absolute;
+    top: 50%;
+    right: 4px;
+    width: 34px;
+    height: 34px;
+    padding: 8px;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.password-toggle svg {
+    width: 100%;
+    height: 100%;
+}
+
+.password-toggle:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--border);
+}
+
+.password-toggle:focus-visible {
+    outline: 2px solid var(--link);
+    outline-offset: 0;
+}
+
+.password-toggle:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+}
+
+.password-toggle .icon-hide,
+.password-toggle[aria-pressed="true"] .icon-show {
+    display: none;
+}
+
+.password-toggle[aria-pressed="true"] .icon-hide {
+    display: block;
+}
+
+/* collapsible groups of the signed-in account options */
+.account-section {
+    margin-bottom: 10px;
+}
+
+.account-section[open] summary {
+    margin-bottom: 4px;
+}
+
+.account-section summary:focus-visible {
+    outline: 2px solid var(--link);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+.account-section .account-note {
+    font-size: 13px;
+    margin: 8px 0 12px;
+}
+
+.account-section .notice {
+    margin-top: 12px;
+}
+
+.account-danger-item {
+    padding: 12px 0;
+    border-top: 1px solid var(--border);
+}
+
+summary + .account-danger-item {
+    border-top: 0;
+}
+
+.account-danger-item p {
+    margin: 0 0 8px;
+}
+
+.account-danger-item .account-danger {
+    margin-top: 0;
+}
+
+.account-danger-item .link-btn-small {
+    margin-left: -8px;
+}
+
+/* the light scheme's red in both: white text keeps 6.5:1 on it */
+.finder-submit.account-danger-btn {
+    background: #b91c1c;
+}
+
+.account-resend {
+    margin: 8px 0 0 -8px;
+}
+
+@media (pointer: coarse) {
+    .password-toggle {
+        width: 40px;
+        height: 40px;
+        padding: 10px;
+        right: 2px;
+    }
+}
+
 /* ------------------------------------------------------------------
  * Phones, tablets and reduced motion (last, so these win over the rules above)
  * ------------------------------------------------------------------ */
