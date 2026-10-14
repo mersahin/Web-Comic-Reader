@@ -122,14 +122,14 @@ Free Supabase projects are paused after a week without database activity. [`.git
 | `M` | Switch between scroll and grid view |
 | `W` / `Shift+W` | Cycle page width (scroll mode) |
 | `F` | Toggle fullscreen |
-| `G` | Go to page: opens the page slider and number field under the toolbar (`Enter` jumps, `Esc` closes it) |
+| `G` | Go to page: opens the page slider and number field under the toolbar (`Enter` jumps, `Esc` closes it). A page that is not extracted yet shows **Loading page N…** with **Cancel** until the reader can jump there |
 | `[` / `]` | Previous / next comic in the library folder (comics opened from the folder) |
 | `Esc` | Close the go-to-page panel when it is open, otherwise close the comic (also while it is still loading) |
-| Browser or phone **Back** | Close the comic and stay on the site (in grid view an enlarged page is closed first) |
+| Browser or phone **Back** | Close the comic and stay on the site (in grid view an enlarged page is closed first). After reloading the page while reading, one Back leaves the site as usual |
 
 Moving around with `Tab`:
 - On the start screen and in the library, `Tab` reaches each comic row; `Enter` opens it. In Recently Read the **×** next to a row is its own stop and removes the comic from the list.
-- Opening a comic puts the focus on its title in the toolbar, so `Space` keeps scrolling. `Shift+Tab` goes to Close, `Tab` to the other toolbar buttons; a hidden toolbar slides back in when the focus reaches it.
+- Opening a comic puts the focus on its title in the toolbar, so `Space` keeps scrolling. `Esc` on the go-to-page panel puts it back there too (or on the page counter when the panel was opened from it). `Shift+Tab` goes to Close, `Tab` to the other toolbar buttons; a hidden toolbar slides back in when the focus reaches it.
 - In scroll mode `Tab` skips the pages and goes on to the end of the comic. In grid mode every thumbnail is a stop.
 - Closing a comic puts the focus back where it was opened: on its row in the list, on the Quick Read box, or on the search field in Telegram search.
 

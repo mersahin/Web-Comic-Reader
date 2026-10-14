@@ -136,6 +136,12 @@ document.addEventListener('DOMContentLoaded', () => {
         closing: false,
         // counts go-to-page requests, so a jump still waiting for its page gives way to a newer one
         jumpRequest: 0,
+        // text of the "Loading page N…" toast while a jump waits for its page
+        jumpToast: '',
+        // where the focus goes back to when Escape closes the go-to-page panel
+        pageJumpReturn: null,
+        // the page was loaded (reload, discarded tab) on the entry of a comic that is no longer open
+        staleEntry: isReaderEntry(),
         wakeLock: null,
         wakeLockPending: false,
         wakeTimer: null,
@@ -737,8 +743,9 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.file = file;
         reader.fromCache = Boolean(options.fromCache);
         // one history entry (same URL) per reading session, so Back closes the comic;
-        // a comic opened from inside the reader reuses it
+        // a comic opened from inside the reader, or right after a reload while reading, reuses it
         if (!isReaderEntry()) pushReaderEntry();
+        reader.staleEntry = false;
         keepScreenOn();
         document.dispatchEvent(new CustomEvent('comicreader:reader-opened', { detail: { filename: file.name } }));
         if (reopenNoticeEl) reopenNoticeEl.hidden = true;
@@ -1028,6 +1035,7 @@ document.addEventListener('DOMContentLoaded', () => {
         closePageJump();
         outputElement.innerHTML = '';
         hideToast();
+        reader.jumpToast = '';
     }
 
     // closes through the reader's history entry when there is one, so Back afterwards leaves the site
@@ -1459,6 +1467,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!reader.pages[index]) return;
         const token = reader.token;
         const request = ++reader.jumpRequest;
+        // a newer jump replaces an older one still waiting, and its toast
+        clearJumpToast();
         showBar();
         if (settings.mode !== 'strip') {
             markLastRead(index);
@@ -1468,14 +1478,22 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        let waitText = '';
         if (reader.loading && reader.loading.done <= index) {
-            waitText = `Loading page ${index + 1}…`;
-            showToast(waitText, false);
+            // stays until the page is there (no timeout), so the jump never comes unannounced;
+            // Cancel drops it and the reader stays where it is
+            reader.jumpToast = `Loading page ${index + 1}…`;
+            showToast(reader.jumpToast, {
+                label: 'Cancel',
+                run: () => {
+                    if (request === reader.jumpRequest) reader.jumpRequest++;
+                }
+            });
+            clearTimeout(reader.toastTimer);
             await waitForExtraction(index, token);
         }
         await waitForImages(reader.pages.slice(0, index + 1));
-        if (waitText && resumeToastTextEl.textContent === waitText) hideToast();
+        // a newer jump or Cancel has dealt with the toast already
+        if (request === reader.jumpRequest) clearJumpToast();
         // closed, switched to another comic or mode, or a newer jump was asked for meanwhile
         if (token !== reader.token || request !== reader.jumpRequest || settings.mode !== 'strip') return;
         goToPage(index);
@@ -1483,6 +1501,12 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.lastScrollY = window.scrollY;
         setCurrentPage(index);
         updateProgress();
+    }
+
+    // hides the "Loading page N…" toast unless another message has replaced it meanwhile
+    function clearJumpToast() {
+        if (reader.jumpToast && !resumeToastEl.hidden && resumeToastTextEl.textContent === reader.jumpToast) hideToast();
+        reader.jumpToast = '';
     }
 
     // resolves once page `index` is extracted, or when the comic is closed or switched
@@ -1518,19 +1542,27 @@ document.addEventListener('DOMContentLoaded', () => {
         pageJumpEl.hidden = false;
         readerPageEl.setAttribute('aria-expanded', 'true');
         showBar();
+        // the page counter when it was clicked, the title (or nothing) when G was pressed
+        reader.pageJumpReturn = document.activeElement;
         pageJumpNumberEl.focus();
         pageJumpNumberEl.select();
     }
 
-    // `returnFocus` puts the focus back on the page counter (Escape, or the counter clicked again);
-    // otherwise it leaves the panel, so Space and the arrow keys scroll the comic again
+    // `returnFocus` (Escape, or the counter clicked again) puts the focus back where it was before the panel
+    // opened: the counter when it was clicked, otherwise the title, so Space scrolls the comic and does not
+    // press the counter again. Otherwise the focus just leaves the panel, so Space and the arrow keys scroll
     function closePageJump(returnFocus = false) {
         if (pageJumpEl.hidden) return;
         const active = document.activeElement;
         if (!returnFocus && active && pageJumpEl.contains(active)) active.blur();
         pageJumpEl.hidden = true;
         readerPageEl.setAttribute('aria-expanded', 'false');
-        if (returnFocus) readerPageEl.focus();
+        const back = reader.pageJumpReturn;
+        reader.pageJumpReturn = null;
+        if (!returnFocus) return;
+        const usable = back && back !== document.body && document.contains(back) && !pageJumpEl.contains(back)
+            && back.getClientRects().length > 0;
+        (usable ? back : readerTitleEl).focus({ preventScroll: true });
     }
 
     // `input` is the field whose value is used (the range when Enter was pressed on it)
@@ -1646,8 +1678,16 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // browser or phone Back while reading: closes the enlarged gallery page first, then the comic.
-    // After a reload while reading, the entry still says `reader`; openComic then reuses it
+    // After a reload while reading, the entry still says `reader`: openComic reuses it, and if no comic is
+    // opened, the first Back (which only steps down to this page's own entry below it) goes back once more,
+    // so one Back leaves the site as it did before the reader had history entries
     window.addEventListener('popstate', () => {
+        const leftStaleEntry = reader.staleEntry;
+        reader.staleEntry = false;
+        if (leftStaleEntry && !reader.open && !isReaderEntry()) {
+            window.history.back();
+            return;
+        }
         if (document.body.classList.contains('lg-on')) {
             const galleryCloseBtn = document.querySelector('.lg-close');
             if (galleryCloseBtn) galleryCloseBtn.click();
