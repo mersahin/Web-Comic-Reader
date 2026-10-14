@@ -14,6 +14,11 @@
  *
  * The auth session lives in sessionStorage unless "Stay signed in" is ticked,
  * because every project on the same <user>.github.io origin shares localStorage.
+ *
+ * A session that arrives in the URL never syncs: anyone can send a link with
+ * the tokens of their own account, and this device's history would upload
+ * there. A confirmation link only says that the email is confirmed; a reset
+ * link shows the new-password form, and that session ends once it is saved.
  */
 document.addEventListener('DOMContentLoaded', () => {
     const config = window.COMIC_SYNC_CONFIG || {};
@@ -26,10 +31,13 @@ document.addEventListener('DOMContentLoaded', () => {
      *   settingsChangedAt, settingsSeenAt (remote updated_at last applied),
      *   pending: { file_name: updated_at ms }, settingsPending,
      *   cursor, settingsCursor (newest server_updated_at seen, server clock),
-     *   caps: { serverClock, checkedAt }, lastFullAt }
+     *   caps: { serverClock, checkedAt }, lastFullAt,
+     *   activeUserId, activeAt (heartbeat: the account a tab synced last, and when) }
      */
     const STATE_KEY = 'comic_sync_state';
     const PERSIST_KEY = 'comic_sync_persist'; // '1' = keep the session in localStorage
+    const LINK_KEY = 'comic_sync_reset';      // sessionStorage: this tab holds a session from a reset link
+    const OTHER_ACCOUNT_WAIT = 2 * 60 * 1000; // another account synced this recently in another tab: wait
     const PUSH_DELAY = 1500;                  // library: wait for changes to settle
     const READING_PUSH_WAIT = 10 * 1000;      // reader open: push at most this late
     const TICK = 30 * 1000;                   // incremental pull (and status refresh)
@@ -58,8 +66,12 @@ document.addEventListener('DOMContentLoaded', () => {
             return '';
         }
     })();
-    // a confirmation or reset link put its result (a session or an error) into the URL
-    const fromEmailLink = /(?:^|[#?&])(?:access_token|error|error_code|error_description)=/.test(window.location.hash + window.location.search);
+    // fixed texts for the error codes an email link can bring; text from the URL itself is never shown
+    const LINK_ERRORS = {
+        otp_expired: 'This email link has expired or was already used. Request a new one below.'
+    };
+    const LINK_ERROR = 'This email link is invalid or has expired. Request a new one below.';
+    const link = readEmailLink();
 
     const $ = (id) => document.getElementById(id);
     const els = {
@@ -109,6 +121,11 @@ document.addEventListener('DOMContentLoaded', () => {
     let flushing = false;   // requests started now get keepalive, so they survive closing the tab
     let deleting = false;   // "Delete my synced data" is running: no sync cycles
     let authSeq = 0;        // only the newest auth event sets `user`
+    let syncUserId = null;  // the account whose sync was started in this tab
+    let otherAccount = false; // another account is syncing in another tab: this tab waits
+    let leaving = false;    // the page is being closed: its heartbeat no longer counts
+    // this tab holds (or held) a session from a reset link: it stays in this tab's sessionStorage
+    let linkTab = false;
     const skippedNames = new Set(); // names the server cannot store, reported once
 
     /* ---------------- storage ---------------- */
@@ -139,18 +156,21 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // session in sessionStorage by default, localStorage only with "Stay signed in"
+    // session in sessionStorage by default, localStorage only with "Stay signed in". A session from a
+    // reset link never touches localStorage, so other tabs keep theirs and never see it
     const authStorage = {
         getItem(key) {
             try {
-                return sessionStorage.getItem(key) ?? localStorage.getItem(key);
+                return linkTab ? sessionStorage.getItem(key) : sessionStorage.getItem(key) ?? localStorage.getItem(key);
             } catch (e) {
                 return null;
             }
         },
         setItem(key, value) {
             try {
-                if (persistSession()) {
+                if (linkTab) {
+                    sessionStorage.setItem(key, value);
+                } else if (persistSession()) {
                     localStorage.setItem(key, value);
                     sessionStorage.removeItem(key);
                 } else {
@@ -164,12 +184,69 @@ document.addEventListener('DOMContentLoaded', () => {
         removeItem(key) {
             try {
                 sessionStorage.removeItem(key);
-                localStorage.removeItem(key);
+                if (!linkTab) localStorage.removeItem(key);
             } catch (e) {
                 // storage unavailable
             }
         }
     };
+
+    /*
+     * What an email link left in the URL: { error: code } for a failed one, { session: type } for
+     * one with tokens. Only reset links (type=recovery) are handed to the library.
+     */
+    function readEmailLink() {
+        const params = {};
+        try {
+            new URLSearchParams(window.location.search).forEach((value, key) => { params[key] = value; });
+            new URLSearchParams(window.location.hash.slice(1)).forEach((value, key) => { params[key] = value; });
+        } catch (e) {
+            return null;
+        }
+        if (params.error || params.error_code || params.error_description) return { error: params.error_code || '' };
+        if (params.access_token) return { session: params.type === 'recovery' ? 'recovery' : 'other', token: params.access_token };
+        return null;
+    }
+
+    const stripLink = () => history.replaceState(history.state, '', redirectUrl());
+
+    function readLinkMark() {
+        try {
+            return sessionStorage.getItem(LINK_KEY) === '1';
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function setLinkMark(on) {
+        try {
+            if (on) sessionStorage.setItem(LINK_KEY, '1');
+            else sessionStorage.removeItem(LINK_KEY);
+        } catch (e) {
+            // storage unavailable
+        }
+    }
+
+    // the access token of this tab's own stored session (sessionStorage only)
+    function tabSessionToken() {
+        try {
+            const stored = JSON.parse(sessionStorage.getItem(AUTH_KEY) || 'null');
+            return (stored && stored.access_token) || '';
+        } catch (e) {
+            return '';
+        }
+    }
+
+    // ends a link's session on the server without storing it here; errors (an expired token) do not matter
+    async function revokeToken(token) {
+        if (!token) return;
+        try {
+            const auth = (await getClient()).auth;
+            if (auth.admin && auth.admin.signOut) await auth.admin.signOut(token, 'local');
+        } catch (err) {
+            // offline or already invalid: the session expires by itself
+        }
+    }
 
     /* ---------------- client ---------------- */
 
@@ -213,7 +290,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         storage: authStorage,
                         persistSession: true,
                         autoRefreshToken: true,
-                        detectSessionInUrl: true
+                        // only a reset link opened in this tab; every other link was taken out of the URL already
+                        detectSessionInUrl: (url, params) => linkTab && params.type === 'recovery' && Boolean(params.access_token)
                     },
                     global: { fetch: wrappedFetch }
                 });
@@ -221,14 +299,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     // keep the callback synchronous; Supabase runs it inside its auth lock
                     setTimeout(() => onAuthChange(event), 0);
                 });
-                // an expired or already used email link: the library keeps quiet and leaves the error in the URL
                 client.auth.initialize().then(({ error }) => {
-                    if (!error || !fromEmailLink) return;
-                    history.replaceState(null, '', redirectUrl());
+                    if (!recovering || !error) return;
+                    // the reset link could not be used (expired or already used): the tab's own session counts again
+                    endRecovery();
+                    stripLink();
                     app() && app().showAccount();
-                    showMessage(/expired|invalid/i.test(error.message || '')
-                        ? 'This email link is invalid or has expired. Request a new one below.'
-                        : error.message || String(error), 'error');
+                    showMessage(LINK_ERROR, 'error');
+                    onAuthChange('INITIAL_SESSION');
                 });
                 return client;
             }).finally(() => { clientPromise = null; });
@@ -241,12 +319,8 @@ document.addEventListener('DOMContentLoaded', () => {
      * BroadcastChannel together with that tab's session), so `user` is always
      * read from this tab's own session.
      */
-    async function onAuthChange(event) {
+    async function onAuthChange() {
         const seq = ++authSeq;
-        if (event === 'PASSWORD_RECOVERY') {
-            recovering = true;
-            app() && app().showAccount();
-        }
         let session = null;
         try {
             const { data, error } = await (await getClient()).auth.getSession();
@@ -260,17 +334,35 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const previous = user ? user.id : null;
         user = session && session.user ? session.user : null;
-        if ((user ? user.id : null) !== previous) {
-            // the previous account's timers, errors and backoff do not carry over
+        const uid = user ? user.id : null;
+        if (uid !== previous) {
+            // the previous account's timers, errors, backoff and heartbeat do not carry over
             stopTimers();
             failures = 0;
             lastError = '';
-            if (user) {
-                requestSync('signin', { pull: true, full: true });
-                startTicker();
-            }
+            otherAccount = false;
+            syncUserId = null;
+            releaseHeartbeat(previous);
+        }
+        // the session of a reset link never syncs (the account may not even be the user's own)
+        if (user && !recovering && syncUserId !== uid) {
+            syncUserId = uid;
+            requestSync('signin', { pull: true, full: true });
+            startTicker();
         }
         render();
+    }
+
+    // the reset is over (password saved, or the link could not be used)
+    function endRecovery() {
+        recovering = false;
+        linkTab = false;
+        setLinkMark(false);
+    }
+
+    // this tab stops syncing `uid` (signed out or switched): other accounts need not wait for it
+    function releaseHeartbeat(uid) {
+        if (uid && loadState().activeUserId === uid) saveState({ activeAt: 0 });
     }
 
     const hasStoredSession = () => Boolean(AUTH_KEY) && authStorage.getItem(AUTH_KEY) !== null;
@@ -329,7 +421,12 @@ document.addEventListener('DOMContentLoaded', () => {
         els.signedIn.hidden = !user || recovering;
 
         const state = loadState();
-        if (user) {
+        if (recovering) {
+            els.status.textContent = 'Choose a new password';
+            els.barText.textContent = 'Choose a new password to finish the reset';
+            els.bar.dataset.state = 'off';
+            els.barBtn.textContent = 'Account';
+        } else if (user) {
             els.userEmail.textContent = user.email || '';
             let barState = 'on';
             let barText = `Synced as ${user.email}`;
@@ -342,6 +439,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 barState = 'pending';
                 barText = 'Offline · changes sync when you are back online';
                 status = barText;
+            } else if (otherAccount) {
+                barState = 'pending';
+                barText = 'Another account is syncing in another tab';
+                status = `${barText}. Sync resumes here when that tab logs out, closes or stays hidden for 2 minutes.`;
             } else if (failures >= 2) {
                 barState = 'error';
                 barText = 'Sync failed';
@@ -447,8 +548,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const { error } = await (await getClient()).auth.updateUser({ password: els.newPassword.value });
             if (error) throw error;
             els.newPassword.value = '';
-            recovering = false;
-            showMessage('Your new password is saved.', 'info');
+            // the link's session ends here (still no sync); the user signs in with the new password
+            await signOutHere();
+            user = null;
+            endRecovery();
+            stripLink();
+            setMode('signin');
+            showMessage('Your new password is saved. Sign in with it below.', 'info');
         } catch (err) {
             showMessage(err.message || String(err), 'error');
         } finally {
@@ -468,6 +574,7 @@ document.addEventListener('DOMContentLoaded', () => {
             await Promise.race([requestSync('push'), wait(4000)]);
             await signOutHere();
         } finally {
+            releaseHeartbeat(user && user.id);
             user = null;
             failures = 0;
             lastError = '';
@@ -507,6 +614,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             });
             await signOutHere();
+            releaseHeartbeat(uid);
             user = null;
             failures = 0;
             lastError = '';
@@ -561,7 +669,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // a cycle stops before its next write when the account changed or its data is being deleted
     function checkUser(uid) {
-        if (user && user.id === uid && !deleting) return;
+        if (user && user.id === uid && !deleting && !recovering) return;
         const err = new Error('Sync stopped because the account changed');
         err.code = ABORTED;
         throw err;
@@ -674,9 +782,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     /* change tracking: works while signed out too, the next sync sends it */
 
+    // the sync state belongs to another account (synced in another tab, or not merged here yet): a
+    // change made here must not be sent into that account
+    const foreignTab = (state) => Boolean(syncUserId) && Boolean(state.userId) && state.userId !== syncUserId;
+
     function markHistoryPending(names) {
         const history = app() ? app().getHistory() : {};
         const state = loadState();
+        if (foreignTab(state)) return;
         const pending = Object.assign({}, state.pending);
         // legacy callers without names: everything changed since the last sync
         const list = names || Object.keys(history).filter((name) => localUpdated(history[name]) > (state.lastSyncAt || 0));
@@ -981,7 +1094,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // reasons: signin, manual, flush, push, retry and the PULL_GAP keys
     function requestSync(reason, opts = {}) {
-        if (!user || !configured || deleting) return Promise.resolve();
+        if (!user || !configured || deleting || recovering) return Promise.resolve();
         if (isOffline()) {
             render();
             return running || Promise.resolve();
@@ -1025,9 +1138,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // pull (when asked or needed), merge, then push what is pending
     async function runCycle(opts) {
-        if (!user || !configured || deleting) return;
+        if (!user || !configured || deleting || recovering) return;
         const uid = user.id;
         const state = loadState();
+        // two accounts in two tabs share this device's history: the one that synced first keeps it
+        // while it is active, and the other waits instead of replacing it
+        if (state.activeUserId && state.activeUserId !== uid && Date.now() - (state.activeAt || 0) < OTHER_ACCOUNT_WAIT) {
+            otherAccount = true;
+            if (opts.manual) showMessage('Another account is syncing in another tab. Log out there first.', 'error');
+            render();
+            return;
+        }
+        otherAccount = false;
+        if (!leaving) saveState({ activeUserId: uid, activeAt: Date.now() });
         const newHere = state.userId !== uid || !state.lastSyncAt;
         showSyncing = Boolean(opts.manual) || newHere;
         if (showSyncing) render();
@@ -1135,6 +1258,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.addEventListener(name, () => {
             // after the settings version it was made on, whatever the device clocks say
             const state = loadState();
+            if (foreignTab(state)) return;
             const changedAt = Math.max(Date.now(), (state.settingsSeenAt || 0) + 1, (state.settingsChangedAt || 0) + 1);
             saveState({ settingsPending: true, settingsChangedAt: changedAt });
             schedulePush();
@@ -1163,9 +1287,15 @@ document.addEventListener('DOMContentLoaded', () => {
         render();
         requestSync('visible', { pull: true });
     });
-    window.addEventListener('pagehide', flush);
+    window.addEventListener('pagehide', () => {
+        flush();
+        // the last cycle may still run, but another account in another tab need not wait for this one
+        leaving = true;
+        releaseHeartbeat(user && user.id);
+    });
     window.addEventListener('pageshow', (event) => {
         if (!event.persisted) return;
+        leaving = false;
         startTicker();
         requestSync('pageshow', { pull: true });
     });
@@ -1193,10 +1323,46 @@ document.addEventListener('DOMContentLoaded', () => {
         pullNow: () => Promise.race([requestSync('pull', { pull: true }), wait(3000)])
     };
 
+    // before the client exists, so the library never sees a link other than a reset link of this tab
+    function handleEmailLink() {
+        let notice = null;
+        const tokens = [];
+        if (link && link.session === 'recovery') {
+            // only the new-password form until it is saved; no sync meanwhile
+            linkTab = true;
+            recovering = true;
+            setLinkMark(true);
+            notice = ['', 'info'];
+        } else if (readLinkMark()) {
+            // reloaded (or reopened) before the new password was saved: that session is dropped
+            linkTab = true;
+            tokens.push(tabSessionToken());
+            removeAuthKeys();
+            linkTab = false;
+            setLinkMark(false);
+            if (!link) notice = ['The password reset was not finished. Request a new link below.', 'error'];
+        }
+        if (link && link.error !== undefined) {
+            stripLink();
+            notice = [LINK_ERRORS[link.error] || LINK_ERROR, 'error'];
+        } else if (link && link.session === 'other') {
+            // a confirmation (or any other) link: the email is confirmed, its session is not used
+            tokens.push(link.token);
+            stripLink();
+            notice = ['Email confirmed. Sign in with your password.', 'info'];
+        }
+        tokens.forEach(revokeToken);
+        if (!notice) return;
+        setMode('signin');
+        showMessage(notice[0], notice[1]);
+        app() && app().showAccount();
+    }
+
     migrateState();
+    if (configured) handleEmailLink();
     render();
     if (configured) {
-        // restores an existing session (or one from an email link) and syncs it
+        // restores an existing session (a reset link's one only in this tab) and syncs it
         getClient().catch((err) => {
             lastError = err.message || String(err);
             render();

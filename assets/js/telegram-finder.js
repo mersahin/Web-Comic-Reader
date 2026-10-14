@@ -185,14 +185,27 @@ document.addEventListener('DOMContentLoaded', () => {
     const MAX_MY_CHANNELS = 50; // matches public.valid_channel_list
     const normalizeChannels = (names) => unique(names).slice(0, MAX_MY_CHANNELS);
 
+    // the textarea shows an older list: it changed while the user had the textarea focused
+    let listStale = false;
+
+    // never rewrites what the user is typing (unless `force`); refreshed on blur instead
+    function showChannels(force = false) {
+        if (!force && document.activeElement === els.channelList) {
+            listStale = true;
+            return;
+        }
+        listStale = false;
+        els.channelList.value = settings.channels.map((c) => '@' + c).join('\n');
+    }
+
     // notify=false when the list came from sync, so it is not sent back
-    function setChannels(names, notify = true) {
+    function setChannels(names, notify = true, force = false) {
         const next = normalizeChannels(names);
         const changed = next.join(',') !== settings.channels.join(',');
         settings.channels = next;
-        els.channelList.value = next.map((c) => '@' + c).join('\n');
         saveSettings();
         updateChannelCount();
+        showChannels(force);
         if (changed && notify) document.dispatchEvent(new CustomEvent('comicreader:channels-changed'));
     }
 
@@ -206,36 +219,42 @@ document.addEventListener('DOMContentLoaded', () => {
         return true;
     }
 
-    // a list from sync waits while the user is typing in the textarea
-    let pendingChannels = null;
-
+    // a list from sync is stored at once (so a reload or another tab has it); while the user is
+    // typing in the textarea it is shown only after the textarea loses the focus
     function applyRemoteChannels(names) {
-        if (normalizeChannels(names).join(',') === settings.channels.join(',')) {
-            pendingChannels = null;
-            return;
-        }
-        if (document.activeElement === els.channelList) {
-            pendingChannels = names;
-            return;
-        }
-        pendingChannels = null;
+        if (normalizeChannels(names).join(',') === settings.channels.join(',')) return;
         setChannels(names, false);
     }
 
     els.channelList.addEventListener('change', () => {
         // the user's own edit wins over a list that arrived while typing
-        pendingChannels = null;
         const names = els.channelList.value.split(/[\s,]+/).map(parseChannel).filter(Boolean);
         if (unique(names).length > MAX_MY_CHANNELS) {
             showMessage(`My channels keeps the first ${MAX_MY_CHANNELS} channels; the rest were left out.`, 'error');
         }
-        setChannels(names);
+        setChannels(names, true, true);
     });
 
+    // not edited: show the list that arrived meanwhile
     els.channelList.addEventListener('blur', () => {
         setTimeout(() => {
-            if (pendingChannels) applyRemoteChannels(pendingChannels);
+            if (listStale && document.activeElement !== els.channelList) showChannels();
         }, 0);
+    });
+
+    // another tab changed My channels or the helper address (or took them from sync)
+    window.addEventListener('storage', (event) => {
+        if (event.key !== FINDER_KEY) return;
+        const stored = loadJSON(FINDER_KEY, {});
+        if (typeof stored.helper === 'string' && stored.helper && stored.helper !== settings.helper) {
+            settings.helper = stored.helper;
+            if (document.activeElement !== els.helperUrl) els.helperUrl.value = settings.helper;
+        }
+        const channels = normalizeChannels(Array.isArray(stored.channels) ? stored.channels : []);
+        if (channels.join(',') === settings.channels.join(',')) return;
+        settings.channels = channels;
+        updateChannelCount();
+        showChannels();
     });
 
     els.helperUrl.addEventListener('change', () => {

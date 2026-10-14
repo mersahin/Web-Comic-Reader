@@ -79,7 +79,7 @@ cd tools/telegram-bundle && npm ci && npm run build
 ```
 
 ### Sync Across Devices
-Click **Sign in** in the bar at the bottom of the panel, create an account with email and password, confirm the email, then sign in on each device.
+Click **Sign in** in the bar at the bottom of the panel, create an account with email and password, confirm the email, then sign in on each device. The confirmation link does not sign you in: the page says the email is confirmed, and you sign in with your password.
 
 What is synced: reading progress and Recently Read (file name, page, page count, last read), reader view settings, and the My channels list. Comic files, thumbnails and Telegram logins stay on each device.
 
@@ -89,10 +89,13 @@ Sync is automatic, there is nothing to press:
 - For each comic the newest change wins. A change always counts as newer than the version it was made on, so a device clock that runs ahead or behind cannot make it lose. Opening a comic is not a change: it resumes at the newest page from any device and never sends an older one.
 - Before the SQL block at the end of `supabase/schema.sql` has been run, the app looks up the server copy of a comic before it sends a change (the newer one wins; an older change that is still unsent when the tab closes goes out on the next visit), and fetches all rows about once a minute. Once it has been run, the server keeps the newer row when a device with older data sends it (that device then takes the server copy), and only changed rows are fetched.
 - If the same comic is open on another device, the reader never jumps; it offers **Go to page N** instead. View settings from another device apply when the comic is closed.
+- Tabs of the same browser share the progress, view settings and My channels: a change in one tab shows up in the others (a new view mode waits until the comic is closed, a new channel list until you leave the My channels box).
 - The bar turns amber while offline or retrying and red after repeated failures. **Sync now** forces a full check.
 - A comic whose file name the server cannot store (longer than 512 characters, or with invalid characters) stays on this device only and never blocks the rest of the sync.
 
-The sign-in lasts until the tab is closed unless **Stay signed in on this device** is ticked. **Log out** signs out this browser only; your other devices stay signed in, and it works offline too. **Delete my synced data** removes everything from the server and logs out; the device keeps its own copy and does not upload it again when you sign in later (only new reading is synced). An expired or already used confirmation or reset link shows a message in the Account view.
+The sign-in lasts until the tab is closed unless **Stay signed in on this device** is ticked. **Log out** signs out this browser only; your other devices stay signed in, and it works offline too. **Delete my synced data** removes everything from the server and logs out; the device keeps its own copy and does not upload it again when you sign in later (only new reading is synced). A password reset link opens only the new-password form and nothing syncs until it is saved; you then sign in with the new password. An expired or already used confirmation or reset link shows a message in the Account view.
+
+If two accounts are signed in in two tabs of the same browser, the one that synced first keeps syncing and the other tab shows "Another account is syncing in another tab" until the first one logs out, is closed or stays hidden for 2 minutes.
 
 #### Setting it up (once, by the site owner)
 1. Create a free project at [supabase.com](https://supabase.com) in the **Central EU (Frankfurt)** region.

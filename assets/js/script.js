@@ -163,37 +163,40 @@ document.addEventListener('DOMContentLoaded', () => {
         getHistory: readHistory,
         applyRemoteHistory,
         replaceHistory: (history) => applyRemoteHistory(history, Object.keys(history)),
-        getReaderSettings() {
-            return { mode: pendingRemoteMode || settings.mode, width: settings.width };
-        },
-        applyReaderSettings(remote) {
-            if (!remote) return;
-            const width = STRIP_WIDTHS.some((w) => w.key === remote.width) ? remote.width : settings.width;
-            const mode = remote.mode === 'grid' || remote.mode === 'strip' ? remote.mode : settings.mode;
-            if (mode === settings.mode) pendingRemoteMode = null;
-            if (width === settings.width && mode === settings.mode) return;
-            applyingRemoteSettings = true;
-            try {
-                if (reader.open) {
-                    // never switch the mode under an open comic; the width keeps the page in place
-                    if (width !== settings.width) {
-                        preservePosition(() => {
-                            settings.width = width;
-                            saveSettings();
-                            applyWidth();
-                        });
-                    }
-                    if (mode !== settings.mode) pendingRemoteMode = mode;
-                } else {
-                    settings.width = width;
-                    settings.mode = mode;
-                    saveSettings();
-                }
-            } finally {
-                applyingRemoteSettings = false;
-            }
-        }
+        getReaderSettings: storedSettings,
+        applyReaderSettings
     };
+
+    // settings from sync or from another tab. They are stored at once (so a reload or another tab
+    // sees them); only the view mode of an open comic waits until it is closed
+    function applyReaderSettings(remote) {
+        if (!remote) return;
+        const width = STRIP_WIDTHS.some((w) => w.key === remote.width) ? remote.width : settings.width;
+        const mode = remote.mode === 'grid' || remote.mode === 'strip' ? remote.mode : settings.mode;
+        if (width === settings.width && mode === (pendingRemoteMode || settings.mode)) return;
+        applyingRemoteSettings = true;
+        try {
+            if (width !== settings.width) {
+                // the width keeps the page in place
+                const change = () => {
+                    settings.width = width;
+                    applyWidth();
+                };
+                if (reader.open) preservePosition(change);
+                else change();
+            }
+            if (reader.open) {
+                // never switch the mode under an open comic
+                pendingRemoteMode = mode !== settings.mode ? mode : null;
+            } else {
+                settings.mode = mode;
+                pendingRemoteMode = null;
+            }
+            saveSettings();
+        } finally {
+            applyingRemoteSettings = false;
+        }
+    }
 
     // current year
     const currYear = (new Date()).getFullYear();
@@ -1658,8 +1661,10 @@ document.addEventListener('DOMContentLoaded', () => {
     readerFullscreenBtn.addEventListener('click', toggleFullscreen);
     modeButtons.forEach((btn) => {
         btn.addEventListener('click', () => {
+            // the mode shown is kept: a mode from another device still applies when the comic closes
+            if (btn.dataset.mode === settings.mode) return;
             pendingRemoteMode = null;
-            if (btn.dataset.mode !== settings.mode) applyMode(btn.dataset.mode);
+            applyMode(btn.dataset.mode);
         });
     });
     resumeStartOverBtn.addEventListener('click', () => {
@@ -1698,6 +1703,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // another tab changed the history (or pulled it from sync)
     window.addEventListener('storage', (event) => {
+        if (event.key === SETTINGS_KEY) {
+            // another tab changed the reader settings (or took them from sync); not sent again from here
+            applyReaderSettings(loadSettings());
+            return;
+        }
         if (event.key !== HISTORY_KEY || reader.open) return;
         loadRecentComics();
         if (currentView === 'library') renderAllComics();
@@ -1847,8 +1857,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // what is stored and synced: a mode that waits for the open comic to close counts already, so a
+    // width change while reading does not send the old mode back
+    function storedSettings() {
+        return { mode: pendingRemoteMode || settings.mode, width: settings.width };
+    }
+
     function saveSettings() {
-        const json = JSON.stringify(settings);
+        const json = JSON.stringify(storedSettings());
         try {
             localStorage.setItem(SETTINGS_KEY, json);
         } catch (e) {
