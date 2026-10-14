@@ -59,6 +59,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // cover thumbnails live in the shared localStorage quota, so they are kept small (tall pages are cropped)
     const THUMB_WIDTH = 100;
     const THUMB_MAX_HEIGHT = 150;
+    // a 100x150 JPEG is a few KB as a data URL; longer ones were made before the height limit
+    const THUMB_MAX_DATA_LENGTH = 20000;
+    const DB_BLOCKED_TEXT = 'Another tab of this reader is open with an older version. Close other tabs of this reader and reload.';
 
     const STRIP_WIDTHS = [
         { key: 'narrow', label: 'S', px: 640, name: 'Narrow' },
@@ -96,6 +99,9 @@ document.addEventListener('DOMContentLoaded', () => {
     let libraryFiles = [];
     // the "storage is full" message is shown once per page load, not on every page turn
     let storageFullNoticeShown = false;
+    // true while a database upgrade waits for a tab running an older version to close
+    let dbBlocked = false;
+    let dbBlockedNoticeShown = false;
 
     const settings = loadSettings();
     let lastSavedSettings = JSON.stringify(settings);
@@ -428,8 +434,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function showReconnectButton() {
+        const active = document.activeElement;
         // show initial view with modified button text
         showInitialView();
+        // a library row that asked for the folder again is hidden now (at startup nothing has the focus)
+        if (active && active !== document.body && !isFocusable(active)) selectFolderBtn.focus();
 
         // change button text to indicate reconnection
         const titleEl = selectFolderBtn.querySelector('.btn-title');
@@ -724,6 +733,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!reopenNoticeEl) return;
         reopenNoticeEl.textContent = text;
         if (kind) reopenNoticeEl.dataset.kind = kind; else delete reopenNoticeEl.dataset.kind;
+        delete reopenNoticeEl.dataset.dbBlocked;
         reopenNoticeEl.hidden = false;
     }
 
@@ -1928,7 +1938,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // notify=false is used when the change came from sync (or changed nothing), so it is not sent back;
     // `names` lists the changed entries
     function writeHistory(history, notify = true, names = null) {
-        const err = storeHistory(history);
+        const err = storeHistory(history, { allThumbnails: true });
         if (err) {
             console.error('Failed to save reading history:', err);
             if (isQuotaError(err)) showStorageFullNotice();
@@ -1936,22 +1946,33 @@ document.addEventListener('DOMContentLoaded', () => {
         if (notify) document.dispatchEvent(new CustomEvent('comicreader:history-changed', { detail: { names } }));
     }
 
-    // returns null once stored, otherwise the error. When the quota is full, thumbnails that
-    // "Recently Read" does not show are dropped for good and the write is tried once more
-    function storeHistory(history) {
+    // returns null once stored, otherwise the error. When the quota is full, thumbnails are dropped
+    // for good, a few more on each try: the ones "Recently Read" does not show, then the oversized ones
+    // made before the height limit, then (`allThumbnails`, for saves that carry progress) all of them.
+    // Progress matters more than covers, which come back as each comic is opened again
+    function storeHistory(history, { allThumbnails = false } = {}) {
+        const fallbacks = [withoutOldThumbnails, withoutOversizedThumbnails];
+        if (allThumbnails) fallbacks.push((entries) => withoutThumbnails(entries, () => true));
+        let error;
         try {
             localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
             return null;
         } catch (e) {
-            const slim = isQuotaError(e) ? withoutOldThumbnails(history) : null;
-            if (!slim) return e;
+            error = e;
+        }
+        for (const fallback of fallbacks) {
+            if (!isQuotaError(error)) break;
+            const slim = fallback(history);
+            if (!slim) continue;
+            history = slim;
             try {
-                localStorage.setItem(HISTORY_KEY, JSON.stringify(slim));
+                localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
                 return null;
             } catch (retryError) {
-                return retryError;
+                error = retryError;
             }
         }
+        return error;
     }
 
     // a copy without the thumbnails of hidden entries and of all but the RECENT_LIMIT most recent ones
@@ -1963,11 +1984,20 @@ document.addEventListener('DOMContentLoaded', () => {
             .slice(0, RECENT_LIMIT)
             .map(([name]) => name));
         if (reader.open) keep.add(reader.filename);
+        return withoutThumbnails(history, (name) => !keep.has(name));
+    }
 
+    // a copy without the tall thumbnails made before THUMB_MAX_HEIGHT existed
+    function withoutOversizedThumbnails(history) {
+        return withoutThumbnails(history, (name, thumbnail) => thumbnail.length > THUMB_MAX_DATA_LENGTH);
+    }
+
+    // a copy without the thumbnails `drop(name, thumbnail)` picks; null when it picks none
+    function withoutThumbnails(history, drop) {
         let dropped = false;
         const slim = {};
         Object.entries(history).forEach(([name, data]) => {
-            if (data && data.thumbnail && !keep.has(name)) {
+            if (data && typeof data.thumbnail === 'string' && drop(name, data.thumbnail)) {
                 const rest = { ...data };
                 delete rest.thumbnail;
                 slim[name] = rest;
@@ -1990,9 +2020,12 @@ document.addEventListener('DOMContentLoaded', () => {
     function showStorageFullNotice() {
         if (storageFullNoticeShown) return;
         storageFullNoticeShown = true;
+        showStorageProblem('Browser storage is full; reading progress could not be saved.');
+    }
+
+    function showStorageProblem(text) {
         // deferred: the save that runs while a comic is closed or switched comes right before the toast is cleared
         setTimeout(() => {
-            const text = 'Browser storage is full; reading progress could not be saved.';
             // #reopenNotice is only visible in Quick Read, the toast on every view
             if (!reader.open && currentView === 'quick') {
                 showQuickNotice(text, 'error');
@@ -2140,20 +2173,38 @@ document.addEventListener('DOMContentLoaded', () => {
     // IndexedDB: 'directories' holds the library folder handle, 'files' the offline copies of opened comics
     function openDB() {
         if (!dbPromise) {
+            let blocked = false;
             const opening = new Promise((resolve, reject) => {
-                let blocked = false;
                 const request = indexedDB.open('ComicReaderDB', 2);
-                request.onerror = () => reject(request.error);
+                // a blocked request ends here or in onsuccess once the other tab is gone
+                const unblock = () => {
+                    dbBlocked = false;
+                    if (dbPromise === opening) dbPromise = null;
+                    // a notice about the blocked database is out of date now
+                    if (reopenNoticeEl && (reopenNoticeEl.textContent === DB_BLOCKED_TEXT || 'dbBlocked' in reopenNoticeEl.dataset)) {
+                        const hadFocus = document.activeElement === reopenNoticeEl;
+                        reopenNoticeEl.hidden = true;
+                        if (hadFocus) visibleHeading()?.focus();
+                    }
+                };
+                request.onerror = () => {
+                    if (blocked) unblock();
+                    reject(request.error);
+                };
                 // a tab running an older version of the reader holds the database open and never lets go
                 request.onblocked = () => {
                     blocked = true;
-                    reject(new Error('Close other tabs of this reader and reload.'));
+                    dbBlocked = true;
+                    reject(new Error(DB_BLOCKED_TEXT));
+                    showDbBlockedNotice();
                 };
                 request.onsuccess = () => {
                     const db = request.result;
-                    // the caller already got the error; the next openDB() opens a fresh connection
+                    // the callers already got the error; the upgrade is done now, so the next openDB()
+                    // connects normally
                     if (blocked) {
                         db.close();
+                        unblock();
                         return;
                     }
                     // a newer version opened in another tab: let it upgrade, the next openDB() reconnects
@@ -2173,10 +2224,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 };
             });
-            opening.catch(() => { if (dbPromise === opening) dbPromise = null; });
+            // while blocked the request stays queued, and a new one would wait behind it for as long as
+            // the other tab is open: every call gets the same error at once until it settles
+            opening.catch(() => { if (!blocked && dbPromise === opening) dbPromise = null; });
             dbPromise = opening;
         }
         return dbPromise;
+    }
+
+    // once per page load: without it offline copies and the library folder silently stop working
+    function showDbBlockedNotice() {
+        if (dbBlockedNoticeShown) return;
+        dbBlockedNoticeShown = true;
+        showStorageProblem(DB_BLOCKED_TEXT);
     }
 
     async function fileStore(mode, action) {
@@ -2207,17 +2267,46 @@ document.addEventListener('DOMContentLoaded', () => {
         const put = () => fileStore('readwrite', (store) => store.put(record, file.name));
         try {
             if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-            try {
-                await put();
-            } catch (err) {
-                // the browser's quota can be below FILE_CACHE_LIMIT (small phones): make room so this
-                // copy and the rest fit in half the budget, then try once more
-                if (!isQuotaError(err) || !(await pruneFileCache(FILE_CACHE_LIMIT / 2 - file.size, file.name))) throw err;
-                await put();
+            // the browser's quota can be far below FILE_CACHE_LIMIT (small phones, private windows):
+            // the least recently read copies make room until this one fits or none is left
+            let others = null;
+            for (;;) {
+                try {
+                    await put();
+                    break;
+                } catch (err) {
+                    if (!isQuotaError(err)) throw err;
+                    const first = others === null;
+                    if (first) others = await cachedCopiesOldestFirst(file.name);
+                    if (!others.length) throw err;
+                    // the first time as many as the quota estimate says are missing, then one at a time;
+                    // nothing is dropped for a file bigger than the whole quota
+                    let missing = first ? await missingSpace(file.size) : 0;
+                    if (missing === Infinity) throw err;
+                    const drop = [];
+                    do {
+                        const oldest = others.shift();
+                        missing -= oldest.size || 0;
+                        drop.push(oldest.name);
+                    } while (missing > 0 && others.length);
+                    await deleteCachedComics(drop);
+                }
             }
             await pruneFileCache(FILE_CACHE_LIMIT, file.name);
         } catch (err) {
             console.warn('Could not keep an offline copy of this comic:', err);
+        }
+    }
+
+    // bytes over the origin's quota once `size` more is stored, from the browser's (rough) estimate;
+    // 0 if unknown, Infinity if `size` alone is over the quota
+    async function missingSpace(size) {
+        try {
+            const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+            if (!quota) return 0;
+            return size > quota ? Infinity : Math.max(0, usage + size - quota);
+        } catch (err) {
+            return 0;
         }
     }
 
@@ -2244,13 +2333,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // cached) always stays. Returns how many copies were dropped
     async function pruneFileCache(limit = FILE_CACHE_LIMIT, keep = null) {
         const records = await fileStore('readonly', (store) => store.getAll());
-        // reopening a copy does not rewrite it, so the reading history gives the real last use
-        const history = readHistory();
-        const lastRead = (record) => history[record.name]?.timestamp ?? record.lastOpened ?? 0;
         let total = records.reduce((sum, record) => sum + (record.size || 0), 0);
-        const candidates = records
-            .filter((record) => record.name !== keep)
-            .sort((a, b) => lastRead(a) - lastRead(b));
+        const candidates = oldestFirst(records.filter((record) => record.name !== keep));
         const drop = [];
         while (total > limit && candidates.length) {
             const oldest = candidates.shift();
@@ -2259,6 +2343,21 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         await deleteCachedComics(drop);
         return drop.length;
+    }
+
+    // name and size of every offline copy except `keep`, least recently read first (read once, so the
+    // retry loop in cacheComicFile does not read the store again after every drop)
+    async function cachedCopiesOldestFirst(keep) {
+        const records = await fileStore('readonly', (store) => store.getAll());
+        return oldestFirst(records.filter((record) => record.name !== keep))
+            .map((record) => ({ name: record.name, size: record.size || 0 }));
+    }
+
+    function oldestFirst(records) {
+        // reopening a copy does not rewrite it, so the reading history gives the real last use
+        const history = readHistory();
+        const lastRead = (record) => history[record.name]?.timestamp ?? record.lastOpened ?? 0;
+        return records.sort((a, b) => lastRead(a) - lastRead(b));
     }
 
     async function saveDirectoryHandle(dirHandle) {
@@ -2370,7 +2469,14 @@ document.addEventListener('DOMContentLoaded', () => {
     function showReopenNotice(filename) {
         showQuickReadMode();
         const page = (readHistory()[filename]?.last_page || 0) + 1;
-        showQuickNotice(`"${filename}" is not stored in this browser any more. Select the file again and reading continues at page ${page}.`);
+        const problem = dbBlocked
+            ? `The offline copy of "${filename}" cannot be read while another tab of this reader is open with an older version: close other tabs of this reader and reload, or select the file again`
+            : `"${filename}" is not stored in this browser any more. Select the file again`;
+        showQuickNotice(`${problem} and reading continues at page ${page}.`, dbBlocked ? 'error' : '');
+        if (dbBlocked && reopenNoticeEl) reopenNoticeEl.dataset.dbBlocked = '';
+        // the row that was activated is hidden or rebuilt by now: the notice takes the focus, so a screen
+        // reader reads it and the next Tab starts in the Quick Read view (Shift+Tab is the file picker)
+        if (!reader.open && reopenNoticeEl) reopenNoticeEl.focus();
     }
 
     async function openComicFromFolder(filename) {
