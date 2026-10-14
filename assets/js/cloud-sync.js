@@ -290,8 +290,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         storage: authStorage,
                         persistSession: true,
                         autoRefreshToken: true,
-                        // only a reset link opened in this tab; every other link was taken out of the URL already
-                        detectSessionInUrl: (url, params) => linkTab && params.type === 'recovery' && Boolean(params.access_token)
+                        // only a reset link opened in this tab (handleEmailLink runs first and takes every
+                        // other link out of the URL); supabase-js 2.117 does not call a function here
+                        detectSessionInUrl: linkTab
                     },
                     global: { fetch: wrappedFetch }
                 });
