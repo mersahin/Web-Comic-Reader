@@ -20,6 +20,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const searchViewEl = document.getElementById('searchView');
     const accountViewEl = document.getElementById('accountView');
     const accountBackBtn = document.getElementById('accountBackBtn');
+    const adminViewEl = document.getElementById('adminView');
+    const wrapEl = document.querySelector('.wrap');
     const searchTelegramBtn = document.getElementById('searchTelegramBtn');
     const librarySearchBtn = document.getElementById('librarySearchBtn');
     const searchBackBtn = document.getElementById('searchBackBtn');
@@ -170,8 +172,9 @@ document.addEventListener('DOMContentLoaded', () => {
         },
         openRecent,
 
-        // used by cloud-sync.js
+        // used by cloud-sync.js and admin-panel.js
         showAccount: showAccountView,
+        showAdmin: showAdminView,
         getHistory: readHistory,
         applyRemoteHistory,
         replaceHistory: (history) => applyRemoteHistory(history, Object.keys(history)),
@@ -398,9 +401,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function showOnly(viewEl) {
-        [initialViewEl, libraryViewEl, quickReadViewEl, searchViewEl, accountViewEl].forEach((el) => {
+        [initialViewEl, libraryViewEl, quickReadViewEl, searchViewEl, accountViewEl, adminViewEl].forEach((el) => {
             if (el) el.style.display = el === viewEl ? 'block' : 'none';
         });
+        // the admin view's user table needs a wider panel
+        if (wrapEl) wrapEl.classList.toggle('wrap-wide', Boolean(adminViewEl) && viewEl === adminViewEl);
     }
 
     function showInitialView() {
@@ -409,10 +414,19 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function showAccountView() {
-        if (currentView !== 'account') viewBeforeAccount = currentView;
+        // the admin view is opened from the account view: Back there still leads where the account view was opened from
+        if (currentView !== 'account' && currentView !== 'admin') viewBeforeAccount = currentView;
         currentView = 'account';
         showOnly(accountViewEl);
         if (window.CloudSync) window.CloudSync.onShow();
+    }
+
+    // owner only: admin-panel.js loads its data and moves the focus to its heading
+    function showAdminView() {
+        if (!adminViewEl) return;
+        currentView = 'admin';
+        showOnly(adminViewEl);
+        if (window.AdminPanel) window.AdminPanel.onShow();
     }
 
     async function returnFromAccount() {
@@ -508,6 +522,8 @@ document.addEventListener('DOMContentLoaded', () => {
             showSearchView();
         } else if (currentView === 'account') {
             showAccountView();
+        } else if (currentView === 'admin') {
+            showOnly(adminViewEl);
         } else if (currentView === 'quick') {
             showQuickReadMode();
         } else {

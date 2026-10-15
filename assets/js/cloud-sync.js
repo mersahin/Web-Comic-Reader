@@ -23,7 +23,8 @@
  *
  * The account view also changes the password or email address, resends the
  * confirmation email, signs out every device and deletes the account (the
- * delete_my_account() function in schema.sql).
+ * delete_my_account() function in schema.sql). For the site owner it shows the
+ * Admin panel button (admin-panel.js); is_admin() is asked once per sign-in.
  */
 document.addEventListener('DOMContentLoaded', () => {
     const config = window.COMIC_SYNC_CONFIG || {};
@@ -129,6 +130,7 @@ document.addEventListener('DOMContentLoaded', () => {
         userEmail: $('syncUserEmail'),
         syncNow: $('syncNowBtn'),
         logout: $('syncLogoutBtn'),
+        adminBtn: $('syncAdminBtn'),
         passwordSection: $('syncPasswordSection'),
         changePasswordForm: $('syncChangePasswordForm'),
         currentPassword: $('syncCurrentPassword'),
@@ -175,6 +177,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // this tab holds (or held) a session from a reset link: it stays in this tab's sessionStorage
     let linkTab = false;
     let emailChanged = false; // an email-change link was opened: a session of this tab shows the old address
+    let admin = false;      // is_admin() said yes for `user`
+    let adminFor = null;    // the account is_admin() was asked for (null: ask at the next chance)
     const skippedNames = new Set(); // names the server cannot store, reported once
 
     /* ---------------- storage ---------------- */
@@ -400,8 +404,9 @@ document.addEventListener('DOMContentLoaded', () => {
             otherAccount = false;
             syncUserId = null;
             releaseHeartbeat(previous);
-            // nor anything typed into its forms
+            // nor anything typed into its forms, nor its admin status
             resetSignedIn();
+            setAdmin(false, null);
         }
         // the session of a reset link never syncs (the account may not even be the user's own)
         if (user && !recovering && syncUserId !== uid) {
@@ -409,11 +414,40 @@ document.addEventListener('DOMContentLoaded', () => {
             requestSync('signin', { pull: true, full: true });
             startTicker();
         }
+        if (user && !recovering && adminFor !== uid) checkAdmin(uid);
         if (emailChanged) {
             emailChanged = false;
             // a session kept in this tab still holds the old address; a refresh brings the new one
             if (user && !recovering) getClient().then((db) => db.auth.refreshSession()).catch(() => {});
         }
+        render();
+    }
+
+    // the Admin panel button and the panel itself follow this; the server checks every admin call again
+    function setAdmin(on, uid) {
+        const changed = admin !== on;
+        admin = on;
+        adminFor = uid;
+        if (changed || !on) document.dispatchEvent(new CustomEvent('cloudsync:account-changed'));
+    }
+
+    // once per sign-in. Before the owner ran the SQL the function does not exist (404, PGRST202): simply
+    // not an admin, without a message. A request that did not get through is asked again when the
+    // account view opens next
+    async function checkAdmin(uid) {
+        adminFor = uid;
+        let res;
+        try {
+            res = await (await getClient()).rpc('is_admin');
+        } catch (err) {
+            res = { status: 0, error: err };
+        }
+        if (!user || user.id !== uid || recovering) return;
+        if (res.status === 0) {
+            adminFor = null;
+            return;
+        }
+        setAdmin(!res.error && res.data === true, uid);
         render();
     }
 
@@ -514,6 +548,7 @@ document.addEventListener('DOMContentLoaded', () => {
         els.signedOut.hidden = Boolean(user) || recovering;
         els.signedIn.hidden = !user || recovering;
         if (user || recovering) els.resendRow.hidden = true;
+        els.adminBtn.hidden = !user || recovering || !admin;
 
         const state = loadState();
         if (recovering) {
@@ -634,6 +669,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // moves to the heading (the message below is announced)
     function afterSignOut(text, kind) {
         resetSignedIn();
+        setAdmin(false, null);
         render();
         showMessage(text, kind);
         const active = document.activeElement;
@@ -772,6 +808,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     els.syncNow.addEventListener('click', () => window.CloudSync.sync());
+    els.adminBtn.addEventListener('click', () => app() && app().showAdmin && app().showAdmin());
 
     els.logout.addEventListener('click', async () => {
         if (!user) return;
@@ -1670,11 +1707,15 @@ document.addEventListener('DOMContentLoaded', () => {
     window.CloudSync = {
         onShow() {
             render();
+            if (user && !recovering && adminFor === null) checkAdmin(user.id);
         },
         sync: () => requestSync('manual', { full: true, manual: true }),
         // a quick catch-up before opening a comic or a local change that should land on top of
         // other devices' progress; resolves at once when signed out, offline or hidden
-        pullNow: () => Promise.race([requestSync('pull', { pull: true }), wait(3000)])
+        pullNow: () => Promise.race([requestSync('pull', { pull: true }), wait(3000)]),
+        // used by admin-panel.js; the admin functions check on the server who is calling
+        account: () => (user && !recovering ? { id: user.id, email: user.email || '', admin } : null),
+        rpc: async (fn, args) => (await getClient()).rpc(fn, args)
     };
 
     // before the client exists, so the library never sees a link other than a reset link of this tab

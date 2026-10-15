@@ -252,6 +252,7 @@
                 <div class="finder-actions-row account-actions">
                     <button type="button" id="syncNowBtn" class="finder-submit">Sync now</button>
                     <button type="button" id="syncLogoutBtn" class="link-btn link-btn-small">Log out</button>
+                    <button type="button" id="syncAdminBtn" class="link-btn link-btn-small" hidden>Admin panel</button>
                 </div>
 
                 <details id="syncPasswordSection" class="finder-card account-section">
@@ -311,6 +312,47 @@
             <div id="syncResendRow" class="account-resend" hidden>
                 <button type="button" id="syncResendBtn" class="link-btn link-btn-small">Resend confirmation email</button>
             </div>
+        </div>
+
+        <div id="adminView" style="display:none;">
+            <div class="library-header">
+                <div class="library-header-left">
+                    <h1 tabindex="-1">Admin</h1>
+                    <div id="adminStatus" class="current-folder">Owner tools for this site's sync accounts</div>
+                </div>
+                <div class="library-header-actions">
+                    <button type="button" id="adminRefreshBtn" class="link-btn">Refresh</button>
+                    <span class="header-divider">•</span>
+                    <button type="button" id="adminBackBtn" class="link-btn">Back</button>
+                </div>
+            </div>
+
+            <div class="account-live" role="status"><div id="adminMessage" class="notice" hidden></div></div>
+
+            <section class="admin-section" aria-labelledby="adminOverviewTitle">
+                <h2 id="adminOverviewTitle" class="admin-title">Overview</h2>
+                <dl id="adminStats" class="admin-stats"></dl>
+            </section>
+
+            <section class="admin-section" aria-labelledby="adminSignupsTitle">
+                <h2 id="adminSignupsTitle" class="admin-title">Sign-ups</h2>
+                <div class="admin-switch-row">
+                    <button type="button" id="adminSignupsSwitch" class="admin-switch" role="switch" aria-checked="false" aria-labelledby="adminSignupsLabel" aria-describedby="adminSignupsNote" disabled><span class="admin-switch-knob"></span></button>
+                    <span id="adminSignupsLabel" class="admin-switch-label">Allow new accounts</span>
+                    <span id="adminSignupsState" class="finder-count"></span>
+                </div>
+                <p id="adminSignupsNote" class="account-note">Sign-up switch needs the Before User Created hook enabled: Supabase dashboard &gt; Authentication &gt; Hooks, Postgres function <code>public.hook_before_user_created</code>. This page cannot tell whether the hook is on; without it new accounts can be created whatever the switch says.</p>
+            </section>
+
+            <section class="admin-section" aria-labelledby="adminUsersTitle">
+                <h2 id="adminUsersTitle" class="admin-title">Users <span id="adminUserCount" class="finder-count"></span></h2>
+                <div id="adminUsers"></div>
+            </section>
+
+            <section class="admin-section" aria-labelledby="adminKeepaliveTitle">
+                <h2 id="adminKeepaliveTitle" class="admin-title">Supabase keepalive</h2>
+                <div id="adminKeepalive" class="admin-keepalive finder-card">Not checked yet</div>
+            </section>
         </div>
 
         <div id="recentComics" style="display:none;">
@@ -387,5 +429,6 @@
     <script src="./assets/js/telegram-finder.js"></script>
     <script src="./assets/js/sync-config.js"></script>
     <script src="./assets/js/cloud-sync.js"></script>
+    <script src="./assets/js/admin-panel.js"></script>
 </body>
 </html>

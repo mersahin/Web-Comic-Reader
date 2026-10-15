@@ -22,7 +22,7 @@ Modern web-based comic book reader for CBR, CBZ, and CBT files with library mana
 - **Reading Progress** - Automatically saves your last read page and scrolls to it when you reopen
 - **Thumbnail Previews** - Auto-generated cover thumbnails for quick comic recognition
 - **Recently Read** - On the start screen: your last 20 comics with page, percentage and a progress bar; remove single entries or clear the list (progress is kept)
-- **Sync Across Devices** - Optional account (email + password) that keeps reading progress, Recently Read, reader settings and My channels in sync; each user sees only their own data
+- **Sync Across Devices** - Optional account (email + password) that keeps reading progress, Recently Read, reader settings and My channels in sync; each user sees only their own data. Change your password or email address, sign out every device or delete the account from the Account view; the site owner gets an admin panel
 - **Offline Copies** - Comics that open successfully (uploads and Telegram downloads) are kept in the browser (IndexedDB, up to 1 GB, least recently read dropped first; a single file over 1 GB is not kept) so Recently Read reopens them in one click. Reopening a copy does not write it again, and when the browser runs out of space (small phones, private windows) the least recently read copies are dropped one at a time until the new one fits; when a dropped copy frees no space at once (the browser can release it later), or the dropped copies freed as much as the new one needs, the new copy is tried once more and then not kept, so one full quota never empties the cache. The copy being saved is never dropped, and nothing is dropped for a file bigger than the browser's whole quota
 - **Telegram Search** - Sign in once with your own Telegram API ID, type a title and read CBZ/CBR/CBT files from public channels right in the browser; an optional local helper adds `site:t.me` web search
 - **Quick Read Mode** - Upload and read individual files without library setup
@@ -113,7 +113,25 @@ If two accounts are signed in in two tabs of the same browser, the one that sync
 3. **Authentication > URL Configuration**: set **Site URL** to `https://mersahin.github.io/Web-Comic-Reader/` and add the same address under **Redirect URLs** (used by confirmation and password reset emails).
 4. **Authentication > Sign In / Providers > Email**: keep Email enabled and **Confirm email** on.
 5. **Project Settings > API**: copy the **Project URL** and the **anon / publishable** key into [`assets/js/sync-config.js`](assets/js/sync-config.js), then commit and push. The anon key is meant to be public; the row level security rules protect the data. Never put the `service_role` key in the site.
-6. Optional: to keep the site for yourself, create your account first, then turn off **Allow new users to sign up** under Authentication.
+6. Optional: to keep the site for yourself, create your account first, then turn off **Allow new users to sign up** under Authentication (or use the sign-up switch of the admin panel below).
+
+#### Admin panel (site owner)
+Signed in as an admin, the Account view shows **Admin panel**. It lists:
+- **Overview**: users (total, confirmed, signed in within 7 and 30 days, banned), users who synced in the last 7 days, synced comics and settings rows, and the database size (the free plan allows 500 MB).
+- **Sign-ups**: a switch that opens or closes new sign-ups. It only takes effect with the Before User Created hook enabled (step 3 below); the page cannot detect the hook and says so.
+- **Users**: email, created, last sign-in, confirmed, comics, last activity and Admin / Banned / Unconfirmed badges (a table on wide screens, cards on phones), with **Ban** / **Unban**, **Delete data** (synced rows only, the account stays) and **Delete user**; each asks for confirmation naming the address. Your own account has no actions there (use the Account view).
+- **Supabase keepalive**: the last run of the keepalive workflow, from GitHub's public API (checked at most every 5 minutes, or on **Refresh**).
+
+Everything runs as `security definer` functions in Postgres (`admin_overview`, `admin_list_users`, `admin_set_banned`, `admin_delete_user_data`, `admin_delete_user`, `admin_set_signups`). Each checks first that the caller is in `public.app_admins` and refuses everyone else, so the site only ever uses the publishable key and the signed-in user's session; hiding the button is a convenience, not the protection. A ban lasts 100 years (like the Auth API's `ban_duration`): the user can no longer sign in or renew a session, but an access token already issued keeps working for the Data API until it expires (1 hour by default).
+
+Setup, once:
+1. Run the last block of [`supabase/schema.sql`](supabase/schema.sql) (or the whole file) in the **SQL Editor**. Before that, the site works as before: no Admin button, and **Delete my account** says it is not available yet.
+2. Make yourself an admin. In the **SQL Editor**, with your own address:
+   ```sql
+   insert into public.app_admins (user_id) select id from auth.users where email = 'you@example.com' on conflict do nothing;
+   ```
+   Then sign in again on the site (the admin check runs once per sign-in). Remove someone with `delete from public.app_admins where user_id = '…';`.
+3. For the sign-up switch: **Authentication > Hooks** (available on the Free plan) > add a **Before User Created** hook, type **Postgres**, schema `public`, function `hook_before_user_created`. While the switch is off it refuses new accounts with "New sign-ups are closed." (shown on the site as "New accounts cannot be created right now."); it also stops invites and first-time OAuth sign-ins, while users added under **Authentication > Users > Add user** are not checked. Without the hook, the switch only changes a setting that nothing reads.
 
 #### Keeping the free project awake
 Free Supabase projects are paused after a week without database activity. [`.github/workflows/supabase-keepalive.yml`](.github/workflows/supabase-keepalive.yml) prevents that: every day at 05:17 UTC it calls `public.keepalive()` as the anon role, using the Project URL and publishable key from `sync-config.js`. It needs no secrets and reads no user data.
@@ -212,13 +230,14 @@ GitHub Pages serves over HTTPS, so Library Mode works on the live site.
 │       ├── script.js      # Main application logic
 │       ├── telegram-finder.js  # Telegram search UI (in-browser client or local helper)
 │       ├── cloud-sync.js       # Account + sync of progress, settings, My channels
+│       ├── admin-panel.js      # Owner-only admin view (data from the admin_* SQL functions)
 │       ├── sync-config.js      # Supabase project URL + anon key (fill in to enable sync)
 │       ├── vendor/telegram.js  # GramJS browser bundle (built by tools/telegram-bundle)
 │       └── uncompress/
 │           └── uncompress.js  # Archive extraction
 ├── tools/tg-finder/tg_finder.py # Optional local helper (web search)
 ├── tools/telegram-bundle/       # Build script for the GramJS bundle
-├── supabase/schema.sql          # Tables, row level security, sync triggers, keepalive()
+├── supabase/schema.sql          # Tables, row level security, sync triggers, keepalive(), account deletion, admin functions, sign-up hook
 ├── .github/workflows/pages.yml  # GitHub Pages deployment
 ├── .github/workflows/supabase-keepalive.yml  # Daily ping that keeps the free Supabase project awake
 ├── README.md

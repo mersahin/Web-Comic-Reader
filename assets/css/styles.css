@@ -1733,6 +1733,298 @@ summary + .account-danger-item {
 }
 
 /* ------------------------------------------------------------------
+ * Admin panel (owner only)
+ * ------------------------------------------------------------------ */
+
+/* room for the user table; Recently Read stays out of the way */
+.wrap.wrap-wide {
+    width: min(1040px, 94%);
+}
+
+.wrap.wrap-wide #recentComics {
+    display: none !important;
+}
+
+#adminView {
+    text-align: left;
+}
+
+.admin-section {
+    margin-top: 22px;
+}
+
+.admin-title {
+    margin: 0 0 10px;
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.admin-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 10px;
+    margin: 0;
+}
+
+.admin-stat {
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg);
+}
+
+.admin-stat-label {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.admin-stat-value {
+    margin: 4px 0 0;
+    font-size: 22px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.admin-stat-note {
+    margin: 2px 0 0;
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.admin-switch-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 4px;
+}
+
+/* the off track uses --muted: at least 3:1 against the panel in both schemes */
+.admin-switch {
+    position: relative;
+    flex-shrink: 0;
+    width: 44px;
+    height: 26px;
+    padding: 0;
+    border: 0;
+    border-radius: 13px;
+    background: var(--muted);
+    cursor: pointer;
+    transition: background .2s;
+}
+
+.admin-switch[aria-checked="true"] {
+    background: var(--brand);
+}
+
+.admin-switch-knob {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .3);
+    transition: transform .2s;
+}
+
+.admin-switch[aria-checked="true"] .admin-switch-knob {
+    transform: translateX(18px);
+}
+
+.admin-switch:focus-visible {
+    outline: 2px solid var(--link);
+    outline-offset: 2px;
+}
+
+.admin-switch:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+}
+
+.admin-switch-label {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+#adminSignupsNote {
+    font-size: 13px;
+    margin: 8px 0 0;
+}
+
+.admin-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.admin-table th {
+    padding: 8px;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.admin-table td {
+    padding: 10px 8px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+
+.admin-cell-label {
+    display: none;
+}
+
+.admin-email {
+    font-weight: 500;
+    overflow-wrap: anywhere;
+}
+
+.admin-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+.admin-badge {
+    padding: 1px 7px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.admin-badge-admin {
+    color: var(--link);
+    border-color: currentColor;
+}
+
+.admin-badge-banned {
+    color: var(--danger);
+    border-color: currentColor;
+}
+
+.admin-badge-self {
+    color: var(--ok-text);
+    border-color: currentColor;
+}
+
+.admin-table time {
+    white-space: nowrap;
+}
+
+.admin-none {
+    color: var(--muted);
+}
+
+.admin-actions {
+    display: flex;
+    gap: 2px;
+    margin: -4px 0 -4px -8px;
+    white-space: nowrap;
+}
+
+.admin-actions .admin-none {
+    padding: 4px 8px;
+    white-space: normal;
+}
+
+.admin-danger {
+    color: var(--danger);
+}
+
+.admin-danger:hover {
+    background: rgba(239, 68, 68, .1);
+}
+
+.admin-keepalive {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 14px;
+    margin: 0;
+    font-size: 13px;
+}
+
+.admin-keepalive a {
+    color: var(--link);
+}
+
+.admin-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: var(--muted);
+}
+
+.admin-dot-ok { background: #16a34a; }
+.admin-dot-pending { background: #f59e0b; }
+.admin-dot-error { background: #ef4444; }
+
+/* narrow screens: each user is a card; the cells carry their own labels */
+@media only screen and (max-width: 820px) {
+    .admin-table,
+    .admin-table tbody,
+    .admin-table tr,
+    .admin-table td {
+        display: block;
+    }
+
+    .admin-table thead {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+
+    .admin-table tr {
+        margin-bottom: 10px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--bg);
+    }
+
+    .admin-table td {
+        display: flex;
+        gap: 8px;
+        padding: 3px 0;
+        border: 0;
+    }
+
+    .admin-cell-label {
+        display: block;
+        flex-shrink: 0;
+        width: 96px;
+        color: var(--muted);
+        font-size: 12px;
+    }
+
+    .admin-table td.admin-cell-user {
+        padding-bottom: 6px;
+    }
+
+    .admin-cell-user .admin-cell-label,
+    .admin-cell-actions .admin-cell-label {
+        display: none;
+    }
+
+    .admin-actions {
+        flex-wrap: wrap;
+        margin: 4px 0 0 -8px;
+    }
+}
+
+/* ------------------------------------------------------------------
  * Phones, tablets and reduced motion (last, so these win over the rules above)
  * ------------------------------------------------------------------ */
 
