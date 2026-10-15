@@ -141,6 +141,13 @@ Free Supabase projects are paused after a week without database activity. [`.git
 - GitHub emails failed runs to whoever created the workflow or last changed its schedule.
 - If the project was paused anyway, resume it in the Supabase dashboard.
 
+### Analytics (optional)
+Google Analytics 4 is off until a Measurement ID is set, and even then it loads only after a visitor allows it:
+- Put the ID (`G-XXXXXXXXXX`, Google Analytics **Admin > Data streams > Web**, stream URL `https://mersahin.github.io/Web-Comic-Reader/`) into [`assets/js/analytics-config.js`](assets/js/analytics-config.js), then commit and push.
+- Visitors see a banner with **Allow** and **Decline**. Before **Allow** nothing is loaded from Google and no cookie is set. **Analytics settings** in the footer changes the choice later; **Decline** stops sending and removes the `_ga` cookies.
+- Sent: page views (the page address without query or hash) and the events `open_comic` (with `source`: upload, folder or telegram), `login`, `sign_up` and `telegram_search`. Never file names, search text, email addresses or other account data. Google signals and ad personalisation are off.
+- To leave out your own visits, use the internal traffic filter in Google Analytics (**Admin > Data filters**).
+
 ### Keyboard Shortcuts (while reading)
 | Key | Action |
 |-----|--------|
@@ -232,6 +239,8 @@ GitHub Pages serves over HTTPS, so Library Mode works on the live site.
 │       ├── cloud-sync.js       # Account + sync of progress, settings, My channels
 │       ├── admin-panel.js      # Owner-only admin view (data from the admin_* SQL functions)
 │       ├── sync-config.js      # Supabase project URL + anon key (fill in to enable sync)
+│       ├── analytics.js        # Google Analytics, loaded only after consent
+│       ├── analytics-config.js # GA4 Measurement ID (fill in to enable analytics)
 │       ├── vendor/telegram.js  # GramJS browser bundle (built by tools/telegram-bundle)
 │       └── uncompress/
 │           └── uncompress.js  # Archive extraction

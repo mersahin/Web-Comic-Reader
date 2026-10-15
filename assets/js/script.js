@@ -773,7 +773,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!isReaderEntry()) pushReaderEntry();
         reader.staleEntry = false;
         keepScreenOn();
-        document.dispatchEvent(new CustomEvent('comicreader:reader-opened', { detail: { filename: file.name } }));
+        document.dispatchEvent(new CustomEvent('comicreader:reader-opened', { detail: { filename: file.name, source: reader.source } }));
         if (reopenNoticeEl) reopenNoticeEl.hidden = true;
 
         document.body.classList.add('reader-open');

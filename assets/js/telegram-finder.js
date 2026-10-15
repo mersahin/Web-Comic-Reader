@@ -803,6 +803,8 @@ document.addEventListener('DOMContentLoaded', () => {
             els.account.open = true;
             return;
         }
+        // counted only, without the search text
+        if (window.ComicAnalytics) window.ComicAnalytics.event('telegram_search');
 
         const seq = ++state.searchSeq;
         showMessage('');

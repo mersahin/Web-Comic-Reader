@@ -719,10 +719,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     setMode('signin');
                     showMessage('Account created. Open the link in the email we just sent to confirm it, then sign in here.', 'info');
                     els.resendRow.hidden = false;
+                    if (window.ComicAnalytics) window.ComicAnalytics.event('sign_up', { method: 'email' });
                 }
             } else {
                 const { error } = await auth.signInWithPassword({ email, password });
                 if (error) throw error;
+                if (window.ComicAnalytics) window.ComicAnalytics.event('login', { method: 'email' });
             }
             els.password.value = '';
             els.passwordConfirm.value = '';
